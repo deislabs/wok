@@ -12,6 +12,14 @@ Pick up some work from the project board: https://github.com/deislabs/wok/projec
 
 You can build the project with `cargo build`.
 
+## Compiling from Source
+
+First, [install Rust](https://www.rust-lang.org/tools/install). Then,
+
+```
+$ cargo run
+```
+
 ## References:
 
 - Tutorial for Tonic: https://github.com/hyperium/tonic/blob/master/examples/helloworld-tutorial.md
