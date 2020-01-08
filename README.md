@@ -14,3 +14,9 @@ TODO:
   - [ ] List the methods here so we can... blah, blah, blah
 - [ ] Implement a wasm32-wasi target/backend
 - [ ] Implement a wasm32-wascc target (See Krustlet)
+
+
+References:
+
+- Tutorial for Tonic: https://github.com/hyperium/tonic/blob/master/examples/helloworld-tutorial.md
+- CRI: https://github.com/kubernetes/cri-api
