@@ -1,5 +1,7 @@
 # WOK: WebAssembly On Kubernetes
 
+![](https://github.com/deislabs/wok/workflows/Build%20and%20Test/badge.svg)
+
 WOK is a CRI implementation that runs WASM on Kubernetes.
 
 This is part of Project Arecibo, our ongoing effort to create a Cloud Native ecosystem for WebAssembly.
