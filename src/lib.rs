@@ -1,10 +1,7 @@
 use tonic::{Request, Response, Status};
 
 // RuntimeService is converted to a package runtime_service_server
-use grpc::{
-    runtime_service_server::RuntimeService,
-    VersionRequest, VersionResponse,
-};
+use grpc::{runtime_service_server::RuntimeService, VersionRequest, VersionResponse};
 
 // Tonic will autogenerate the module's body.
 pub mod grpc {
@@ -12,7 +9,9 @@ pub mod grpc {
 }
 
 /// The version of the runtime API that this tool knows.
-const RUNTIME_API_VERSION: &str = "v1alpha2";
+/// See CRI-O for reference (since docs don't explain this)
+/// https://github.com/cri-o/cri-o/blob/master/server/version.go
+const RUNTIME_API_VERSION: &str = "0.1.0";
 
 type CriResult<T> = Result<Response<T>, Status>;
 
@@ -28,7 +27,9 @@ impl RuntimeService for CRIRuntimeService {
             version: RUNTIME_API_VERSION.to_string(),
             runtime_name: env!("CARGO_PKG_NAME").to_string(),
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
-            runtime_api_version: "0.1.0-alpha.2".to_string(),
+            // NOTE: The Kubernetes API distinctly says that this MUST be a SemVer...
+            // but actually require this format, which is not SemVer at all.
+            runtime_api_version: "v1alpha2".to_string(),
         }))
     }
 }
