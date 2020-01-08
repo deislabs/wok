@@ -26,8 +26,8 @@ impl RuntimeService for CRIRuntimeService {
         log::info!("Version request from API version {:?}", req);
         Ok(Response::new(VersionResponse {
             version: RUNTIME_API_VERSION.to_string(),
-            runtime_name: "wok".to_string(),
-            runtime_version: "0.1.0".to_string(),
+            runtime_name: env!("CARGO_PKG_NAME").to_string(),
+            runtime_version: env!("CARGO_PKG_VERSION").to_string(),
             runtime_api_version: "0.1.0-alpha.2".to_string(),
         }))
     }
