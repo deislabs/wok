@@ -6,6 +6,9 @@ TODO:
   - [ ] Write a real README
   - [ ] Set up the CLA bot?
   - [ ] Make this repo public
+- [ ] Kubernetes Integration
+  - [ ] Figure out how to run a CRI plugin
+  - [ ] Instructions for running with KinD
 - [ ] Add the Tokio server (technosophos is part way through this)
 - [ ] Add a simple client that can do a `version` request
 - [ ] Implement all of the pod and container methods
