@@ -12,19 +12,25 @@ IF YOU THINK THIS README SUCKS, THEN [ISSUE #5](https://github.com/deislabs/wok/
 
 Pick up some work from the project board: https://github.com/deislabs/wok/projects/1
 
+The easiest way to run this code is to install and use [Just](https://github.com/casey/just), a make-like tool with some super handy features.
+
 Open two terminals: one for the client, and one for the server.
 
 Terminal 1:
 
 ```
-$ cargo run --bin wok-server
+$ just run
 ```
 
 Terminal 2:
 
 ```
-$ cargo run --bin wok-client
+$ just client
 ```
+
+To build binaries of both the client and the server, run `just build`.
+
+(If you would prefer to run raw Cargo commands, you can look at the `justfile` for examples)
 
 ## References:
 
