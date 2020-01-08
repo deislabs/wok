@@ -12,7 +12,19 @@ IF YOU THINK THIS README SUCKS, THEN [ISSUE #5](https://github.com/deislabs/wok/
 
 Pick up some work from the project board: https://github.com/deislabs/wok/projects/1
 
-You can build the project with `cargo build`.
+Open two terminals: one for the client, and one for the server.
+
+Terminal 1:
+
+```
+$ cargo run --bin wok-server
+```
+
+Terminal 2:
+
+```
+$ cargo run --bin wok-client
+```
 
 ## References:
 

@@ -1,13 +1,13 @@
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{Request, Response, Status};
 
 // RuntimeService is converted to a package runtime_service_server
-use cri::{
-    runtime_service_server::{RuntimeService, RuntimeServiceServer},
+use grpc::{
+    runtime_service_server::RuntimeService,
     VersionRequest, VersionResponse,
 };
 
 // Tonic will autogenerate the module's body.
-pub mod cri {
+pub mod grpc {
     tonic::include_proto!("runtime.v1alpha2");
 }
 
@@ -31,20 +31,4 @@ impl RuntimeService for CRIRuntimeService {
             runtime_api_version: "0.1.0-alpha.2".to_string(),
         }))
     }
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "0.0.0.0:50051";
-    let runtime = CRIRuntimeService {};
-    env_logger::init();
-
-    log::info!("listening on {}", addr);
-
-    Server::builder()
-        .add_service(RuntimeServiceServer::new(runtime))
-        .serve(addr.parse()?)
-        .await?;
-
-    Ok(())
 }
