@@ -10,3 +10,6 @@ install:
 
 client:
     cargo run --bin wok-client
+
+test:
+    cargo test
