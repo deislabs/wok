@@ -13,3 +13,7 @@ client:
 
 test:
     cargo test
+
+bootstrap:
+    cd libwasm2oci && dep ensure -v
+    CGO_ENABLED=1 go build -buildmode=c-archive -o target/libwasm2oci.a libwasm2oci/libwasm2oci.go 

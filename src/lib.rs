@@ -12,6 +12,8 @@ pub mod grpc {
     tonic::include_proto!("runtime.v1alpha2");
 }
 
+pub mod oci;
+
 /// The version of the runtime API that this tool knows.
 /// See CRI-O for reference (since docs don't explain this)
 /// https://github.com/cri-o/cri-o/blob/master/server/version.go
