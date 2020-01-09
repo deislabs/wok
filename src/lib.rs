@@ -1,7 +1,11 @@
 use tonic::{Request, Response, Status};
+#[macro_use]
+extern crate failure;
 
 // RuntimeService is converted to a package runtime_service_server
 use grpc::{runtime_service_server::RuntimeService, VersionRequest, VersionResponse};
+
+pub mod wasm;
 
 // Tonic will autogenerate the module's body.
 pub mod grpc {
@@ -13,7 +17,9 @@ pub mod grpc {
 /// https://github.com/cri-o/cri-o/blob/master/server/version.go
 const RUNTIME_API_VERSION: &str = "0.1.0";
 
-type CriResult<T> = Result<Response<T>, Status>;
+type CriResult<T> = std::result::Result<Response<T>, Status>;
+
+type Result<T> = std::result::Result<T, failure::Error>;
 
 /// Implement a CRI runtime service.
 #[derive(Debug, Default)]

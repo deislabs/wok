@@ -1,7 +1,7 @@
 use tonic::transport::Server;
 
-use wok::CRIRuntimeService;
 use wok::grpc::runtime_service_server::RuntimeServiceServer;
+use wok::CRIRuntimeService;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
