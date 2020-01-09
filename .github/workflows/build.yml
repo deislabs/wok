@@ -10,6 +10,12 @@ jobs:
       - uses: actions/checkout@v1
       - name: Build
         run: |
+          # we need a working Go environment in order to build the Go static library
+          export GOPATH=$HOME/go && export GOBIN=$(go env GOPATH)/bin && export PATH=$PATH:$GOPATH && export PATH=$PATH:$GOBIN
+          mkdir -p $GOPATH/pkg && mkdir -p $GOBIN && mkdir -p $GOPATH/src/github.com/$GITHUB_REPOSITORY
+          mv $(pwd)/* $GOPATH/src/github.com/$GITHUB_REPOSITORY && cd $GOPATH/src/github.com/$GITHUB_REPOSITORY
+          go get -u github.com/golang/dep/cmd/dep
+
           cargo install just
           just bootstrap
           just build
