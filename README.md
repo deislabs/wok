@@ -19,6 +19,7 @@ Open two terminals: one for the client, and one for the server.
 Terminal 1:
 
 ```
+$ just bootstrap
 $ just run
 ```
 

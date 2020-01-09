@@ -1,0 +1,16 @@
+[[constraint]]
+  name = "github.com/engineerd/wasm-to-oci"
+  branch = "master"
+
+[[override]]
+  name = "github.com/deislabs/oras"
+  version = "0.6.0"
+
+[[override]]
+  name = "github.com/docker/docker"
+  revision = "8a43b7bb99cd1eedc3aca61fbc3ccfba6b75c209"
+
+
+[[override]]
+  name = "github.com/containerd/containerd"
+  revision = "894b81a4b802e4eb2a91d1ce216b8817763c29fb"

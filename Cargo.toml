@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = [
     "Matt Butcher <matt.butcher@microsoft.com>",
     "Matthew Fisher <matt.fisher@microsoft.com>",
+    "Radu Matei <radu.matei@microsoft.com>",
 ]
 edition = "2018"
 
