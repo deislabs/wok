@@ -17,7 +17,7 @@ Prerequisites:
 - `cargo`
 - [`just`](https://github.com/casey/just)
 
-Ensure you clone this project in your `GOPATH`.
+Ensure you clone this project in your `GOPATH`.  The environment variable `GO111MODULE` is unset by the bootstrap build script.  If you build manually, ensure that you `unset GO111MODULE` first.
 
 Pick up some work from the project board: https://github.com/deislabs/wok/projects/1
 
