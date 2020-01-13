@@ -8,19 +8,11 @@ authors = [
 ]
 edition = "2018"
 
-[[bin]]
-name = "wok-client"
-path = "src/bin/client.rs"
-
-[[bin]]
-name = "wok-server"
-path = "src/bin/server.rs"
-
 [dependencies]
 tonic = "0.1.0-beta.1"
 bytes = "0.4"
 prost = "0.5"
-tokio = { version = "0.2", features = ["macros"] }
+tokio = { version = "0.2", features = ["full"] }
 env_logger = "0.7.1"
 log = "0.4.8"
 failure = "0.1.6"
@@ -29,6 +21,7 @@ wasmtime-wasi = "0.8"
 wasi-common = "0.8"
 tempfile = "3.1"
 futures = "0.3.1"
+clap = { git = "https://github.com/clap-rs/clap", features = ["wrap_help"] }
 
 [build-dependencies]
 tonic-build = "0.1.0-beta.1"
