@@ -16,8 +16,8 @@ pub fn pull_wasm(reference: String, file: String) -> Result<(), OCIError> {
     let result = unsafe { Pull(go_str_ref, go_str_file) };
 
     match result {
-        0 => return Ok(()),
-        _ => return Err(OCIError::Custom(String::from("cannot pull module"))),
+        0 => Ok(()),
+        _ => Err(OCIError::Custom(String::from("cannot pull module"))),
     }
 }
 
@@ -56,7 +56,9 @@ pub struct __BindgenComplex<T> {
     pub re: T,
     pub im: T,
 }
+#[allow(non_camel_case_types)]
 pub type wchar_t = ::std::os::raw::c_int;
+#[allow(non_camel_case_types)]
 pub type max_align_t = u128;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -65,6 +67,7 @@ pub struct _GoString_ {
     pub n: isize,
 }
 #[test]
+#[allow(non_snake_case)]
 fn bindgen_test_layout__GoString_() {
     assert_eq!(
         ::std::mem::size_of::<_GoString_>(),
@@ -112,6 +115,7 @@ pub type GoFloat32 = f32;
 pub type GoFloat64 = f64;
 pub type GoComplex64 = __BindgenComplex<f32>;
 pub type GoComplex128 = __BindgenComplex<f64>;
+#[allow(non_camel_case_types)]
 pub type _check_for_64_bit_pointer_matching_GoInt = [::std::os::raw::c_char; 1usize];
 pub type GoString = _GoString_;
 pub type GoMap = *mut ::std::os::raw::c_void;
@@ -123,6 +127,7 @@ pub struct GoInterface {
     pub v: *mut ::std::os::raw::c_void,
 }
 #[test]
+#[allow(non_snake_case)]
 fn bindgen_test_layout_GoInterface() {
     assert_eq!(
         ::std::mem::size_of::<GoInterface>(),
@@ -162,6 +167,7 @@ pub struct GoSlice {
     pub len: GoInt,
     pub cap: GoInt,
 }
+#[allow(non_snake_case)]
 #[test]
 fn bindgen_test_layout_GoSlice() {
     assert_eq!(
