@@ -3,3 +3,4 @@
 *.a
 pulled.wasm
 libwasm2oci/vendor/
+.vscode/
