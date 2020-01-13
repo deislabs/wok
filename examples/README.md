@@ -2,11 +2,17 @@
 
 This directory contains some of the example workloads that can be run using wok.
 
+For any examples you'll need to first install [wasmtime](https://github.com/bytecodealliance/wasmtime), and then make sure that you have the `wasm32-wasi` target for Rust installed:
+
+```
+rustup target add wasm32-wasi
+```
+
 ## helloworld-demo
 
 A headless demonstration that can be compiled with the `wasm32-wasi` target. It displays a friendly message every few seconds.
 
-First, install [wasmtime](https://github.com/bytecodealliance/wasmtime). Then,
+To run this demo, change into the `helloworld-demo` directory and run the following:
 
 ```
 cargo build --target wasm32-wasi
@@ -21,7 +27,7 @@ A sample WebAssembly Module that can be compiled with the `wasm32-wasi` target. 
 
 NOTE: this demo was built in preparation for [socket support](https://github.com/bytecodealliance/wasmtime/pull/539) landing in wasmtime. It currently does not work (but it likely will in the future!)
 
-First, install [wasmtime](https://github.com/bytecodealliance/wasmtime). Then,
+To run this demo, change into the `wasm32-wasi-demo` directory and run the following:
 
 ```
 cargo build --target wasm32-wasi
