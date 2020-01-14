@@ -44,7 +44,7 @@ struct Opts {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: Opts = Opts::parse();
-    let runtime = CRIRuntimeService::default();
+    let runtime = CRIRuntimeService::new();
 
     env_logger::init();
 
@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .add_service(RuntimeServiceServer::new(runtime))
                 .serve_with_incoming(uds.incoming().map_ok(unix::UnixStream))
                 .await?;
-        },
+        }
         "tcp" => {
             let listener = addr.parse::<std::net::SocketAddr>()?;
 
@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .add_service(RuntimeServiceServer::new(runtime))
                 .serve(listener)
                 .await?;
-        },
+        }
         _ => return Err(BadAddr.into()),
     }
 
@@ -136,7 +136,7 @@ mod unix {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: Opts = Opts::parse();
-    let runtime = CRIRuntimeService::default();
+    let runtime = CRIRuntimeService::new();
 
     env_logger::init();
 
@@ -154,7 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match proto {
         "unix" => {
             panic!("unix domain sockets are not supported on Windows!");
-        },
+        }
         "tcp" => {
             let listener = tokio::net::TcpListener::bind(addr).await?;
 
@@ -162,7 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .add_service(RuntimeServiceServer::new(runtime))
                 .serve(listener)
                 .await?;
-        },
+        }
         _ => return Err(BadAddr.into()),
     }
 

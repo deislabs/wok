@@ -3,7 +3,10 @@ use tonic::{Request, Response, Status};
 extern crate failure;
 
 // RuntimeService is converted to a package runtime_service_server
-use grpc::{runtime_service_server::RuntimeService, VersionRequest, VersionResponse};
+use grpc::{
+    runtime_service_server::RuntimeService, ListPodSandboxRequest, ListPodSandboxResponse,
+    PodSandbox, VersionRequest, VersionResponse,
+};
 
 pub mod wasm;
 
@@ -27,7 +30,15 @@ type Result<T> = std::result::Result<T, failure::Error>;
 
 /// Implement a CRI runtime service.
 #[derive(Debug, Default)]
-pub struct CRIRuntimeService {}
+pub struct CRIRuntimeService {
+    pods: Vec<PodSandbox>,
+}
+
+impl CRIRuntimeService {
+    pub fn new() -> Self {
+        CRIRuntimeService { pods: vec![] }
+    }
+}
 
 #[tonic::async_trait]
 impl RuntimeService for CRIRuntimeService {
@@ -42,12 +53,21 @@ impl RuntimeService for CRIRuntimeService {
             runtime_api_version: RUNTIME_API_VERSION.to_string(),
         }))
     }
+
+    async fn list_pod_sandbox(
+        &self,
+        _req: Request<ListPodSandboxRequest>,
+    ) -> CriResult<ListPodSandboxResponse> {
+        Ok(Response::new(ListPodSandboxResponse {
+            items: self.pods.clone(),
+        }))
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::grpc::VersionRequest;
+    use crate::grpc::{ListPodSandboxRequest, VersionRequest};
     use futures::executor::block_on;
     use tonic::Request;
     #[test]
@@ -55,8 +75,13 @@ mod test {
         block_on(_test_version())
     }
 
+    #[test]
+    fn test_list_pod_sandbox() {
+        block_on(_test_list_pod_sandbox())
+    }
+
     async fn _test_version() {
-        let svc = CRIRuntimeService {};
+        let svc = CRIRuntimeService::new();
         let res = svc.version(Request::new(VersionRequest::default())).await;
         assert_eq!(
             res.as_ref()
@@ -71,5 +96,12 @@ mod test {
                 .runtime_api_version,
             RUNTIME_API_VERSION
         );
+    }
+
+    async fn _test_list_pod_sandbox() {
+        let svc = CRIRuntimeService::new();
+        let req = Request::new(ListPodSandboxRequest::default());
+        let res = svc.list_pod_sandbox(req).await;
+        assert_eq!(0, res.expect("successful pod list").get_ref().items.len());
     }
 }
