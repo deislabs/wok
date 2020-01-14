@@ -23,5 +23,14 @@ tempfile = "3.1"
 futures = "0.3.1"
 clap = { git = "https://github.com/clap-rs/clap", features = ["wrap_help"] }
 
+# This is a forked version of h2 that plays nicely with gRPC by ignoring the http/2 spec.
+# Specifically, the Go implementation of gRPC allows setting illegal :authority
+# headers. Kubernetes does in fact send illegal headers. So we swallow the error produced
+# by parsing that section, instead returning a placeholder authority.
+# See:
+# https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#testing-a-bugfix
+[patch.crates-io]
+h2 = { git = "https://github.com/technosophos/h2.git" }
+
 [build-dependencies]
 tonic-build = "0.1.0-beta.1"
