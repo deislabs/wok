@@ -42,6 +42,14 @@ To build binaries of both the client and the server, run `just build`.
 
 (If you would prefer to run raw Cargo commands, you can look at the `justfile` for examples)
 
+## Testing the Server
+
+Kubernetes provides a CRI conformance tool called `critest` and a client called `crictl`. You can use these to work with Wok.
+
+To get started, install the tools according to one of the methods described in the [cri-tools project documentation](https://github.com/kubernetes-sigs/cri-tools).
+
+To run a simple test, start your server in one terminal (`just run`), and then open a new terminal and run `just server-version`. To run the full integration test suite, execute `just test-integration` in its own terminal.
+
 ## References:
 
 - Tutorial for Tonic: https://github.com/hyperium/tonic/blob/master/examples/helloworld-tutorial.md
