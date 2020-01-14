@@ -62,7 +62,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match proto {
         "unix" => {
             // attempt to create base directory if it doesn't already exist
-            tokio::fs::create_dir_all(Path::new(addr).parent().unwrap_or(Path::new(addr))).await?;
+            tokio::fs::create_dir_all(Path::new(addr).parent().unwrap_or_else(|| Path::new(addr)))
+                .await?;
 
             let mut uds = UnixListener::bind(addr)?;
 
