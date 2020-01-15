@@ -16,7 +16,7 @@ alias test := test-unit
 
 # Execute the server in the foreground
 run:
-    RUST_LOG={{log_level}} cargo run
+    RUST_LOG={{log_level}} cargo run -- --dir ~/.wok
 
 # Build the server
 build:
