@@ -12,9 +12,7 @@ crictl_yaml := "./crictl.yaml"
 # or the code.
 wok_sock := "/tmp/wok.sock"
 
-
 run:
-    file {{wok_sock}} && rm {{wok_sock}} || true
     RUST_LOG={{log_level}} cargo run
 
 build:
