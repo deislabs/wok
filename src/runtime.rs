@@ -13,25 +13,25 @@ const RUNTIME_API_VERSION: &str = "v1alpha2";
 const API_VERSION: &str = "0.1.0";
 
 /// CriResult describes a Result that has a Response<T> and a Status
-type CriResult<T> = std::result::Result<Response<T>, Status>;
+pub type CriResult<T> = std::result::Result<Response<T>, Status>;
 
 /// Result describes a Runtime result that may return a failure::Error if things go wrong.
 pub type Result<T> = std::result::Result<T, failure::Error>;
 
 /// Implement a CRI runtime service.
 #[derive(Debug, Default)]
-pub struct CRIRuntimeService {
+pub struct CriRuntimeService {
     pods: Vec<PodSandbox>,
 }
 
-impl CRIRuntimeService {
+impl CriRuntimeService {
     pub fn new() -> Self {
-        CRIRuntimeService { pods: vec![] }
+        CriRuntimeService { pods: vec![] }
     }
 }
 
 #[tonic::async_trait]
-impl RuntimeService for CRIRuntimeService {
+impl RuntimeService for CriRuntimeService {
     async fn version(&self, req: Request<VersionRequest>) -> CriResult<VersionResponse> {
         log::info!("Version request from API version {:?}", req);
         Ok(Response::new(VersionResponse {
@@ -71,7 +71,7 @@ mod test {
     }
 
     async fn _test_version() {
-        let svc = CRIRuntimeService::new();
+        let svc = CriRuntimeService::new();
         let res = svc.version(Request::new(VersionRequest::default())).await;
         assert_eq!(
             res.as_ref()
@@ -89,7 +89,7 @@ mod test {
     }
 
     async fn _test_list_pod_sandbox() {
-        let svc = CRIRuntimeService::new();
+        let svc = CriRuntimeService::new();
         let req = Request::new(ListPodSandboxRequest::default());
         let res = svc.list_pod_sandbox(req).await;
         assert_eq!(0, res.expect("successful pod list").get_ref().items.len());

@@ -9,3 +9,6 @@ pub mod grpc {
 pub mod oci;
 pub mod runtime;
 pub mod wasm;
+
+pub use grpc::runtime_service_server::RuntimeServiceServer;
+pub use runtime::{CriResult, CriRuntimeService};
