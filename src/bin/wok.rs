@@ -11,8 +11,7 @@ use tokio::net::UnixListener;
 extern crate clap;
 use tonic::transport::Server;
 
-use wok::grpc::runtime_service_server::RuntimeServiceServer;
-use wok::CRIRuntimeService;
+use wok::{grpc::runtime_service_server::RuntimeServiceServer, runtime::CRIRuntimeService};
 
 #[derive(Debug, Clone)]
 struct BadAddr;
@@ -40,7 +39,6 @@ struct Opts {
     addr: String,
 }
 
-#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: Opts = Opts::parse();
@@ -59,31 +57,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     log::info!("listening on {}", addr);
 
-    match proto {
-        "unix" => {
-            // attempt to create base directory if it doesn't already exist
-            tokio::fs::create_dir_all(Path::new(addr).parent().unwrap_or_else(|| Path::new(addr)))
-                .await?;
-
-            let mut uds = UnixListener::bind(addr)?;
-
-            Server::builder()
-                .add_service(RuntimeServiceServer::new(runtime))
-                .serve_with_incoming(uds.incoming().map_ok(unix::UnixStream))
-                .await?;
-        }
-        "tcp" => {
-            let listener = addr.parse::<std::net::SocketAddr>()?;
-
-            Server::builder()
-                .add_service(RuntimeServiceServer::new(runtime))
-                .serve(listener)
-                .await?;
-        }
-        _ => return Err(BadAddr.into()),
+    // Temporary work-around for async/.await
+    match serve(proto, addr, runtime).await {
+        Err(e) => Err(e),
+        _ => Ok(()),
     }
-
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -133,25 +111,45 @@ mod unix {
     }
 }
 
-#[cfg(windows)]
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let opts: Opts = Opts::parse();
-    let runtime = CRIRuntimeService::new();
+#[cfg(unix)]
+async fn serve(
+    proto: &str,
+    addr: &str,
+    runtime: CRIRuntimeService,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match proto {
+        "unix" => {
+            // attempt to create base directory if it doesn't already exist
+            tokio::fs::create_dir_all(Path::new(addr).parent().unwrap_or_else(|| Path::new(addr)))
+                .await?;
 
-    env_logger::init();
+            let mut uds = UnixListener::bind(addr)?;
 
-    let parts: Vec<&str> = opts.addr.split("://").collect();
+            Server::builder()
+                .add_service(RuntimeServiceServer::new(runtime))
+                .serve_with_incoming(uds.incoming().map_ok(unix::UnixStream))
+                .await?;
+        }
+        "tcp" => {
+            let listener = addr.parse::<std::net::SocketAddr>()?;
 
-    if parts.len() != 2 {
-        return Err(BadAddr.into());
+            Server::builder()
+                .add_service(RuntimeServiceServer::new(runtime))
+                .serve(listener)
+                .await?;
+        }
+        _ => return Err(BadAddr.into()),
     }
 
-    let proto = parts[0];
-    let addr = parts[1];
+    Ok(())
+}
 
-    log::info!("listening on {}", addr);
-
+#[cfg(windows)]
+async fn serve(
+    proto: &str,
+    addr: &str,
+    runtime: CRIRuntimeService,
+) -> Result<(), Box<dyn std::error::Error>> {
     match proto {
         "unix" => {
             panic!("unix domain sockets are not supported on Windows!");
