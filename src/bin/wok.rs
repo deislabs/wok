@@ -1,14 +1,15 @@
+#[macro_use]
+extern crate clap;
+extern crate ctrlc;
+
 use std::error;
 use std::fmt;
+use std::fs;
 use std::path::Path;
 
 use futures::stream::TryStreamExt;
-
 #[cfg(unix)]
 use tokio::net::UnixListener;
-
-#[macro_use]
-extern crate clap;
 use tonic::transport::Server;
 
 use wok::{CriRuntimeService, RuntimeServiceServer};
@@ -52,13 +53,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(BadAddr.into());
     }
 
-    let proto = parts[0];
-    let addr = parts[1];
-
-    log::info!("listening on {}", addr);
+    log::info!("listening on {}", parts[1]);
 
     // Temporary work-around for async/.await
-    match serve(proto, addr, runtime).await {
+    match serve(parts[0], parts[1], runtime).await {
         Err(e) => Err(e),
         _ => Ok(()),
     }
@@ -126,6 +124,13 @@ async fn serve(
 
             let mut uds = UnixListener::bind(addr)?;
 
+            let path: String = addr.to_owned();
+            ctrlc::set_handler(move || {
+                // ignore the error if we fail to remove the file; there can be cases where the user exits before the UDS is bound
+                fs::remove_file(Path::new(&path)).unwrap_or(());
+                std::process::exit(0);
+            }).expect("Error setting exit handler");
+
             Server::builder()
                 .add_service(RuntimeServiceServer::new(runtime))
                 .serve_with_incoming(uds.incoming().map_ok(unix::UnixStream))
@@ -156,8 +161,7 @@ async fn serve(
             panic!("unix domain sockets are not supported on Windows!");
         }
         "tcp" => {
-            let listener = tokio::net::TcpListener::bind(addr).await?;
-
+            let listener = addr.parse::<std::net::SocketAddr>()?;
             Server::builder()
                 .add_service(RuntimeServiceServer::new(runtime))
                 .serve(listener)
@@ -165,6 +169,5 @@ async fn serve(
         }
         _ => return Err(BadAddr.into()),
     }
-
     Ok(())
 }
