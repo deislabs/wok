@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use tonic::{Request, Response, Status};
 // RuntimeService is converted to a package runtime_service_server
 use crate::grpc::{
     runtime_service_server::RuntimeService, ListPodSandboxRequest, ListPodSandboxResponse,
-    PodSandbox, VersionRequest, VersionResponse,
+    PodSandbox, PodSandboxStatusRequest, PodSandboxStatusResponse, RemovePodSandboxRequest,
+    RemovePodSandboxResponse, RunPodSandboxRequest, RunPodSandboxResponse, StopPodSandboxRequest,
+    StopPodSandboxResponse, VersionRequest, VersionResponse,
 };
 
 /// The version of the runtime API that this tool knows.
@@ -52,12 +55,45 @@ impl RuntimeService for CriRuntimeService {
             items: self.pods.clone(),
         }))
     }
+
+    async fn run_pod_sandbox(
+        &self,
+        _req: Request<RunPodSandboxRequest>,
+    ) -> CriResult<RunPodSandboxResponse> {
+        Ok(Response::new(RunPodSandboxResponse {
+            pod_sandbox_id: "1".to_owned(),
+        }))
+    }
+
+    async fn stop_pod_sandbox(
+        &self,
+        _req: Request<StopPodSandboxRequest>,
+    ) -> CriResult<StopPodSandboxResponse> {
+        Ok(Response::new(StopPodSandboxResponse {}))
+    }
+
+    async fn remove_pod_sandbox(
+        &self,
+        _req: Request<RemovePodSandboxRequest>,
+    ) -> CriResult<RemovePodSandboxResponse> {
+        Ok(Response::new(RemovePodSandboxResponse {}))
+    }
+
+    async fn pod_sandbox_status(
+        &self,
+        _req: Request<PodSandboxStatusRequest>,
+    ) -> CriResult<PodSandboxStatusResponse> {
+        Ok(Response::new(PodSandboxStatusResponse {
+            info: HashMap::new(),
+            status: None,
+        }))
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::grpc::{ListPodSandboxRequest, VersionRequest};
+    use crate::grpc::*;
     use futures::executor::block_on;
     use tonic::Request;
     #[test]
@@ -66,8 +102,28 @@ mod test {
     }
 
     #[test]
+    fn test_run_pod_sandbox() {
+        block_on(_test_run_pod_sandbox())
+    }
+
+    #[test]
     fn test_list_pod_sandbox() {
         block_on(_test_list_pod_sandbox())
+    }
+
+    #[test]
+    fn test_pod_sandbox_status() {
+        block_on(_test_pod_sandbox_status())
+    }
+
+    #[test]
+    fn test_remove_pod_sandbox() {
+        block_on(_test_remove_pod_sandbox())
+    }
+
+    #[test]
+    fn test_stop_pod_sandbox() {
+        block_on(_test_stop_pod_sandbox())
     }
 
     async fn _test_version() {
@@ -88,10 +144,48 @@ mod test {
         );
     }
 
+    async fn _test_run_pod_sandbox() {
+        let svc = CriRuntimeService::new();
+        let req = Request::new(RunPodSandboxRequest::default());
+        let res = svc.run_pod_sandbox(req).await;
+        assert_eq!(
+            "1".to_owned(),
+            res.expect("successful pod run submission")
+                .get_ref()
+                .pod_sandbox_id
+        );
+    }
+
     async fn _test_list_pod_sandbox() {
         let svc = CriRuntimeService::new();
         let req = Request::new(ListPodSandboxRequest::default());
         let res = svc.list_pod_sandbox(req).await;
         assert_eq!(0, res.expect("successful pod list").get_ref().items.len());
+    }
+
+    async fn _test_pod_sandbox_status() {
+        let svc = CriRuntimeService::new();
+        let req = Request::new(PodSandboxStatusRequest::default());
+        let res = svc.pod_sandbox_status(req).await;
+        assert_eq!(None, res.expect("status result").get_ref().status);
+    }
+
+    async fn _test_remove_pod_sandbox() {
+        let svc = CriRuntimeService::new();
+        let req = Request::new(RemovePodSandboxRequest::default());
+        let res = svc.remove_pod_sandbox(req).await;
+        // We expect an empty response object
+        res.expect("remove sandbox result");
+    }
+
+    async fn _test_stop_pod_sandbox() {
+        let svc = CriRuntimeService::new();
+        let req = Request::new(StopPodSandboxRequest {
+            pod_sandbox_id: "test".to_owned(),
+        });
+        let res = svc.stop_pod_sandbox(req).await;
+
+        // Expect the stopped ID to be the same as the requested ID.
+        res.expect("empty stop result");
     }
 }
