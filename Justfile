@@ -14,15 +14,19 @@ wok_sock := "/tmp/wok.sock"
 
 alias test := test-unit
 
+# Execute the server in the foreground
 run:
     RUST_LOG={{log_level}} cargo run
 
+# Build the server
 build:
     cargo build
 
+# Install using Cargo
 install:
     RUSTFLAGS=-Awarnings cargo install -f --path .
 
+# Build the Go libwasm2oci library
 bootstrap:
     cd libwasm2oci && dep ensure -v
     GO111MODULE= CGO_ENABLED=1 go build -buildmode=c-archive -o target/libwasm2oci.a libwasm2oci/libwasm2oci.go
@@ -31,13 +35,17 @@ bootstrap:
 server-version:
     crictl -c {{crictl_yaml}} version
 
+# Run all available test suites.
 test-all: test-unit test-integration test-benchmark
 
+# Run the unit tests with Cargo
 test-unit:
     cargo test
 
+# Run the critest conformance suite
 test-integration:
     critest --runtime-endpoint {{wok_sock}}
 
+# Run the critest benchmarking suite
 test-benchmark:
     critest --runtime-endpoint {{wok_sock}} --benchmark
