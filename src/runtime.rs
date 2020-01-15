@@ -1,8 +1,17 @@
 use tonic::{Request, Response, Status};
 // RuntimeService is converted to a package runtime_service_server
 use crate::grpc::{
-    runtime_service_server::RuntimeService, ListPodSandboxRequest, ListPodSandboxResponse,
-    PodSandbox, VersionRequest, VersionResponse,
+    runtime_service_server::RuntimeService,
+    PodSandbox,
+    ListPodSandboxRequest, ListPodSandboxResponse,
+    VersionRequest, VersionResponse,
+    image_service_server::ImageService,
+    Image,
+    ListImagesRequest, ListImagesResponse,
+    ImageStatusRequest, ImageStatusResponse,
+    PullImageRequest, PullImageResponse,
+    RemoveImageRequest, RemoveImageResponse,
+    ImageFsInfoRequest, ImageFsInfoResponse,
 };
 
 /// The version of the runtime API that this tool knows.
@@ -22,11 +31,12 @@ pub type Result<T> = std::result::Result<T, failure::Error>;
 #[derive(Debug, Default)]
 pub struct CriRuntimeService {
     pods: Vec<PodSandbox>,
+    images: Vec<Image>,
 }
 
 impl CriRuntimeService {
     pub fn new() -> Self {
-        CriRuntimeService { pods: vec![] }
+        CriRuntimeService { pods: vec![], images: vec![] }
     }
 }
 
@@ -54,6 +64,46 @@ impl RuntimeService for CriRuntimeService {
     }
 }
 
+#[tonic::async_trait]
+impl ImageService for CriRuntimeService {
+    async fn list_images(
+        &self,
+        _req: Request<ListImagesRequest>,
+    ) -> CriResult<ListImagesResponse> {
+        Ok(Response::new(ListImagesResponse {
+            images: self.images.clone(),
+        }))
+    }
+
+    async fn image_status(
+        &self,
+        _req: Request<ImageStatusRequest>,
+    ) -> CriResult<ImageStatusResponse> {
+        Err(tonic::Status::unimplemented("Not yet implemented"))
+    }
+
+    async fn pull_image(
+        &self,
+        _req: Request<PullImageRequest>,
+    ) -> CriResult<PullImageResponse> {
+        Err(tonic::Status::unimplemented("Not yet implemented"))
+    }
+
+    async fn remove_image(
+        &self,
+        _req: Request<RemoveImageRequest>,
+    ) -> CriResult<RemoveImageResponse> {
+        Err(tonic::Status::unimplemented("Not yet implemented"))
+    }
+
+    async fn image_fs_info(
+        &self,
+        _req: Request<ImageFsInfoRequest>,
+    ) -> CriResult<ImageFsInfoResponse> {
+        Err(tonic::Status::unimplemented("Not yet implemented"))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -68,6 +118,31 @@ mod test {
     #[test]
     fn test_list_pod_sandbox() {
         block_on(_test_list_pod_sandbox())
+    }
+
+    #[test]
+    fn test_list_images() {
+        block_on(_test_list_images())
+    }
+
+    #[test]
+    fn test_image_status() {
+        block_on(_test_image_status())
+    }
+
+    #[test]
+    fn test_pull_image() {
+        block_on(_test_pull_image())
+    }
+
+    #[test]
+    fn test_remove_image() {
+        block_on(_test_remove_image())
+    }
+
+    #[test]
+    fn test_image_fs_info() {
+        block_on(_test_image_fs_info())
     }
 
     async fn _test_version() {
@@ -93,5 +168,40 @@ mod test {
         let req = Request::new(ListPodSandboxRequest::default());
         let res = svc.list_pod_sandbox(req).await;
         assert_eq!(0, res.expect("successful pod list").get_ref().items.len());
+    }
+
+    async fn _test_list_images() {
+        let svc = CriRuntimeService::new();
+        let req = Request::new(ListImagesRequest::default());
+        let res = svc.list_images(req).await;
+        assert_eq!(0, res.expect("successful image list").get_ref().images.len());
+    }
+
+    async fn _test_image_status() {
+        let svc = CriRuntimeService::new();
+        let req = Request::new(ImageStatusRequest::default());
+        let res = svc.image_status(req).await;
+        assert!(res.is_err(), "successful image status");
+    }
+
+    async fn _test_pull_image() {
+        let svc = CriRuntimeService::new();
+        let req = Request::new(PullImageRequest::default());
+        let res = svc.pull_image(req).await;
+        assert!(res.is_err(), "successful image pull");
+    }
+
+    async fn _test_remove_image() {
+        let svc = CriRuntimeService::new();
+        let req = Request::new(RemoveImageRequest::default());
+        let res = svc.remove_image(req).await;
+        assert!(res.is_err(), "successful image remove");
+    }
+
+    async fn _test_image_fs_info() {
+        let svc = CriRuntimeService::new();
+        let req = Request::new(ImageFsInfoRequest::default());
+        let res = svc.image_fs_info(req).await;
+        assert!(res.is_err(), "successful image fs info");
     }
 }
