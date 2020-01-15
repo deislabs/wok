@@ -11,7 +11,7 @@ use tokio::net::UnixListener;
 extern crate clap;
 use tonic::transport::Server;
 
-use wok::{grpc::runtime_service_server::RuntimeServiceServer, runtime::CRIRuntimeService};
+use wok::{CriRuntimeService, RuntimeServiceServer};
 
 #[derive(Debug, Clone)]
 struct BadAddr;
@@ -42,7 +42,7 @@ struct Opts {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: Opts = Opts::parse();
-    let runtime = CRIRuntimeService::new();
+    let runtime = CriRuntimeService::new();
 
     env_logger::init();
 
@@ -111,11 +111,12 @@ mod unix {
     }
 }
 
+/// Create a server for handling CRI Runtime requests.
 #[cfg(unix)]
 async fn serve(
     proto: &str,
     addr: &str,
-    runtime: CRIRuntimeService,
+    runtime: CriRuntimeService,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match proto {
         "unix" => {
@@ -148,7 +149,7 @@ async fn serve(
 async fn serve(
     proto: &str,
     addr: &str,
-    runtime: CRIRuntimeService,
+    runtime: CriRuntimeService,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match proto {
         "unix" => {
