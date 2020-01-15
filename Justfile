@@ -12,6 +12,8 @@ crictl_yaml := "./crictl.yaml"
 # or the code.
 wok_sock := "/tmp/wok.sock"
 
+alias test := test-unit
+
 run:
     RUST_LOG={{log_level}} cargo run
 
@@ -21,9 +23,6 @@ build:
 install:
     RUSTFLAGS=-Awarnings cargo install -f --path .
 
-test:
-    cargo test
-
 bootstrap:
     cd libwasm2oci && dep ensure -v
     GO111MODULE= CGO_ENABLED=1 go build -buildmode=c-archive -o target/libwasm2oci.a libwasm2oci/libwasm2oci.go
@@ -32,5 +31,13 @@ bootstrap:
 server-version:
     crictl -c {{crictl_yaml}} version
 
+test-all: test-unit test-integration test-benchmark
+
+test-unit:
+    cargo test
+
 test-integration:
     critest --runtime-endpoint {{wok_sock}}
+
+test-benchmark:
+    critest --runtime-endpoint {{wok_sock}} --benchmark
