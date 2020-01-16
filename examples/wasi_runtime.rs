@@ -12,7 +12,7 @@ fn main() {
 
     let args: Vec<String> = vec!["a", "lovely", "bunch", "of", "coconuts"]
         .iter()
-        .map(|s| s.to_string())
+        .map(|s| (*s).to_string())
         .collect();
 
     let runtime = WasiRuntime::new("./examples/printer.wasm", env, args, dirs, "./").unwrap();
