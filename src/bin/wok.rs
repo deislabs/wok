@@ -12,7 +12,7 @@ use futures::stream::TryStreamExt;
 use tokio::net::UnixListener;
 use tonic::transport::Server;
 
-use wok::{CriRuntimeService, RuntimeServiceServer};
+use wok::{CriImageService, CriRuntimeService, ImageServiceServer, RuntimeServiceServer};
 
 #[derive(Debug, Clone)]
 struct BadAddr;
@@ -38,14 +38,16 @@ impl error::Error for BadAddr {
 struct Opts {
     #[clap(short = "a", long = "addr", default_value = "unix:///tmp/wok.sock")]
     addr: String,
+
+    #[clap(short = "d", long = "dir")]
+    dir: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: Opts = Opts::parse();
     let runtime = CriRuntimeService::new();
-
-    env_logger::init();
+    let image_service = CriImageService::new(opts.dir);
 
     let parts: Vec<&str> = opts.addr.split("://").collect();
 
@@ -56,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("listening on {}", parts[1]);
 
     // Temporary work-around for async/.await
-    match serve(parts[0], parts[1], runtime).await {
+    match serve(parts[0], parts[1], runtime, image_service).await {
         Err(e) => Err(e),
         _ => Ok(()),
     }
@@ -115,6 +117,7 @@ async fn serve(
     proto: &str,
     addr: &str,
     runtime: CriRuntimeService,
+    image_service: CriImageService,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match proto {
         "unix" => {
@@ -129,10 +132,12 @@ async fn serve(
                 // ignore the error if we fail to remove the file; there can be cases where the user exits before the UDS is bound
                 fs::remove_file(Path::new(&path)).unwrap_or(());
                 std::process::exit(0);
-            }).expect("Error setting exit handler");
+            })
+            .expect("Error setting exit handler");
 
             Server::builder()
                 .add_service(RuntimeServiceServer::new(runtime))
+                .add_service(ImageServiceServer::new(image_service))
                 .serve_with_incoming(uds.incoming().map_ok(unix::UnixStream))
                 .await?;
         }

@@ -1,6 +1,88 @@
+use crate::grpc::{
+    image_service_server::ImageService, ImageStatusRequest, ImageStatusResponse, ListImagesRequest,
+    ListImagesResponse, PullImageRequest, PullImageResponse,
+};
+use crate::runtime::CriResult;
 use std::ffi::CString;
+use tonic::{Request, Response, Status};
+extern crate dirs;
 
-pub fn pull_wasm(reference: String, file: String) -> Result<(), OCIError> {
+pub fn default_image_dir() -> String {
+    String::from(
+        std::path::PathBuf::new()
+            .join(dirs::home_dir().expect("cannot get home directory"))
+            .join(".wok")
+            .join("modules")
+            .to_str()
+            .unwrap(),
+    )
+}
+
+/// Implement a CRI Image Service
+#[derive(Debug, Default)]
+pub struct CriImageService {
+    root_dir: String,
+}
+
+impl CriImageService {
+    pub fn new(dir: String) -> Self {
+        CriImageService::ensure_root_dir(&dir)
+            .expect("cannot create root directory for image service");
+        CriImageService { root_dir: dir }
+    }
+
+    fn pull_module(&self, module_ref: String) -> Result<(), failure::Error> {
+        // currently, the library only accepts modules tagged in the following structure:
+        // <registry>/<repository>:<tag>
+        // for example: webassembly.azurecr.io/hello:v1
+        let registry_parts: Vec<&str> = module_ref.split("/").collect();
+        let reg = registry_parts[0];
+        let repo_parts: Vec<&str> = registry_parts[1].split(":").collect();
+        let repo = repo_parts[0];
+        let tag = repo_parts[1];
+
+        let pull_path = std::path::PathBuf::new()
+            .join(self.root_dir.clone())
+            .join(reg)
+            .join(repo)
+            .join(tag);
+
+        std::fs::create_dir_all(pull_path.clone())?;
+        let target_mod = pull_path.join("module.wasm");
+        pull_wasm(module_ref, String::from(target_mod.to_str().unwrap()))
+    }
+
+    fn ensure_root_dir(dir: &String) -> Result<(), failure::Error> {
+        println!("ensuring root directory {}", dir);
+        std::fs::create_dir_all(dir)?;
+        Ok(())
+    }
+}
+
+#[tonic::async_trait]
+impl ImageService for CriImageService {
+    async fn list_images(
+        &self,
+        request: Request<ListImagesRequest>,
+    ) -> CriResult<ListImagesResponse> {
+        Err(Status::unimplemented("BOO"))
+    }
+
+    async fn pull_image(&self, request: Request<PullImageRequest>) -> CriResult<PullImageResponse> {
+        let image_ref = request.into_inner().image.unwrap().image;
+
+        self.pull_module(image_ref.clone())
+            .expect("cannot pull module");
+        let resp = PullImageResponse {
+            image_ref: image_ref,
+        };
+
+        Ok(Response::new(resp))
+    }
+}
+
+pub fn pull_wasm(reference: String, file: String) -> Result<(), failure::Error> {
+    println!("pulling {} into {}", reference, file);
     let c_ref = CString::new(reference)?;
     let c_file = CString::new(file)?;
 
@@ -14,10 +96,12 @@ pub fn pull_wasm(reference: String, file: String) -> Result<(), OCIError> {
     };
 
     let result = unsafe { Pull(go_str_ref, go_str_file) };
-
     match result {
         0 => Ok(()),
-        _ => Err(OCIError::Custom(String::from("cannot pull module"))),
+
+        _ => Err(failure::Error::from(OCIError::Custom(String::from(
+            "cannot pull module",
+        )))),
     }
 }
 
@@ -45,6 +129,18 @@ impl From<std::io::Error> for OCIError {
 impl From<std::ffi::NulError> for OCIError {
     fn from(err: std::ffi::NulError) -> Self {
         OCIError::Nul(err)
+    }
+}
+
+impl std::fmt::Display for OCIError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+impl std::error::Error for OCIError {
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        Some(self)
     }
 }
 
