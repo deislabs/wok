@@ -1,6 +1,6 @@
 use crate::grpc::{
-    image_service_server::ImageService, ImageStatusRequest, ImageStatusResponse, ListImagesRequest,
-    ListImagesResponse, PullImageRequest, PullImageResponse,
+    image_service_server::ImageService, ListImagesRequest, ListImagesResponse, PullImageRequest,
+    PullImageResponse,
 };
 use crate::runtime::CriResult;
 use std::ffi::CString;
@@ -30,14 +30,13 @@ impl CriImageService {
             .expect("cannot create root directory for image service");
         CriImageService { root_dir: dir }
     }
-
     fn pull_module(&self, module_ref: String) -> Result<(), failure::Error> {
         // currently, the library only accepts modules tagged in the following structure:
         // <registry>/<repository>:<tag>
         // for example: webassembly.azurecr.io/hello:v1
-        let registry_parts: Vec<&str> = module_ref.split("/").collect();
+        let registry_parts: Vec<&str> = module_ref.split('/').collect();
         let reg = registry_parts[0];
-        let repo_parts: Vec<&str> = registry_parts[1].split(":").collect();
+        let repo_parts: Vec<&str> = registry_parts[1].split(':').collect();
         let repo = repo_parts[0];
         let tag = repo_parts[1];
 
@@ -52,7 +51,7 @@ impl CriImageService {
         pull_wasm(module_ref, String::from(target_mod.to_str().unwrap()))
     }
 
-    fn ensure_root_dir(dir: &String) -> Result<(), failure::Error> {
+    fn ensure_root_dir(dir: &str) -> Result<(), failure::Error> {
         println!("ensuring root directory {}", dir);
         std::fs::create_dir_all(dir)?;
         Ok(())
@@ -63,7 +62,7 @@ impl CriImageService {
 impl ImageService for CriImageService {
     async fn list_images(
         &self,
-        request: Request<ListImagesRequest>,
+        _request: Request<ListImagesRequest>,
     ) -> CriResult<ListImagesResponse> {
         Err(Status::unimplemented("BOO"))
     }
@@ -73,9 +72,7 @@ impl ImageService for CriImageService {
 
         self.pull_module(image_ref.clone())
             .expect("cannot pull module");
-        let resp = PullImageResponse {
-            image_ref: image_ref,
-        };
+        let resp = PullImageResponse { image_ref };
 
         Ok(Response::new(resp))
     }
