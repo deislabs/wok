@@ -1,7 +1,7 @@
 extern crate wok;
 
 use std::io::Read;
-use wok::wasm::{DirMapping, EnvVars, WasiRuntime};
+use wok::wasm::{DirMapping, EnvVars, Runtime, WasiRuntime};
 
 fn main() {
     let mut dirs = DirMapping::default();
