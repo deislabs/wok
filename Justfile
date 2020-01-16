@@ -40,6 +40,7 @@ test-all: test-unit test-integration test-benchmark
 
 # Run the unit tests with Cargo
 test-unit:
+    cargo clippy
     cargo test
 
 # Run the critest conformance suite

@@ -16,6 +16,7 @@ Prerequisites:
 - `go` and `dep`
 - `cargo`
 - [`just`](https://github.com/casey/just)
+- `clippy` (`rustup component add clippy`)
 - `crictl` and `critest` for integration testing
 
 Ensure you clone this project in your `GOPATH`.  The environment variable `GO111MODULE` is unset by the bootstrap build script.  If you build manually, ensure that you `unset GO111MODULE` first.
