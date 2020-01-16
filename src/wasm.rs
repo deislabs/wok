@@ -17,6 +17,11 @@ pub type EnvVars = HashMap<String, String>;
 /// runtime
 pub type DirMapping = HashMap<String, Option<String>>;
 
+pub trait Runtime {
+    fn run(&self) -> Result<()>;
+    fn output(&self) -> Result<(BufReader<File>, BufReader<File>)>;
+}
+
 /// WasiRuntime provides a WASI compatible runtime. A runtime should be used for
 /// each "instance" of a process and can be passed to a thread pool for running
 // TODO: Should we have a Trait that this implements along with the WASCC runtime?
@@ -26,6 +31,34 @@ pub struct WasiRuntime {
     imports: Vec<Extern>,
     stdout: NamedTempFile,
     stderr: NamedTempFile,
+}
+
+impl Runtime for WasiRuntime {
+    fn run(&self) -> Result<()> {
+        info!("starting run of module");
+        let _instance = match Instance::new(&self.store, &self.module, &self.imports) {
+            Ok(i) => i,
+            Err(e) => return Err(format_err!("unable to run module: {}", e)),
+        };
+
+        info!("module run complete");
+        Ok(())
+    }
+
+    /// output returns a tuple of BufReaders containing stdout and stderr
+    /// respectively. It will error if it can't open a stream
+    // TODO(taylor): I can't completely tell from documentation, but we may
+    // need to switch this out from a BufReader if it can't handle streaming
+    // logs
+    fn output(&self) -> Result<(BufReader<File>, BufReader<File>)> {
+        // As warned in the BufReader docs, creating multiple BufReaders on the
+        // same stream can cause data loss. So reopen a new file object each
+        // time this function as called so as to not drop any data
+        let stdout = self.stdout.reopen()?;
+        let stderr = self.stderr.reopen()?;
+
+        Ok((BufReader::new(stdout), BufReader::new(stderr)))
+    }
 }
 
 impl WasiRuntime {
@@ -104,31 +137,5 @@ impl WasiRuntime {
             stdout,
             stderr,
         })
-    }
-
-    pub fn run(&self) -> Result<()> {
-        info!("starting run of module");
-        let _instance = match Instance::new(&self.store, &self.module, &self.imports) {
-            Ok(i) => i,
-            Err(e) => return Err(format_err!("unable to run module: {}", e)),
-        };
-
-        info!("module run complete");
-        Ok(())
-    }
-
-    /// output returns a tuple of BufReaders containing stdout and stderr
-    /// respectively. It will error if it can't open a stream
-    // TODO(taylor): I can't completely tell from documentation, but we may
-    // need to switch this out from a BufReader if it can't handle streaming
-    // logs
-    pub fn output(&self) -> Result<(BufReader<File>, BufReader<File>)> {
-        // As warned in the BufReader docs, creating multiple BufReaders on the
-        // same stream can cause data loss. So reopen a new file object each
-        // time this function as called so as to not drop any data
-        let stdout = self.stdout.reopen()?;
-        let stderr = self.stderr.reopen()?;
-
-        Ok((BufReader::new(stdout), BufReader::new(stderr)))
     }
 }
