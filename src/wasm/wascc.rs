@@ -72,7 +72,16 @@ mod test {
     fn test_wascc_run() {
         register_native_capabilities().expect("HTTP capability is registered");
         // Open file
-        // Read bytes
+        let data = std::fs::read("./lib/greet_actor_signed.wasm").expect("read the wasm file");
         // Send into wascc_run
+        wascc_run(
+            &data,
+            EnvVars::new(),
+            "MADK3R3H47FGXN5F4HWPSJH4WCKDWKXQBBIOVI7YEPEYEMGJ2GDFIFE5",
+        )
+        .expect("successfully executed a WASM");
+
+        host::remove_actor("MADK3R3H47FGXN5F4HWPSJH4WCKDWKXQBBIOVI7YEPEYEMGJ2GDFIFE5")
+            .expect("Removed the actor");
     }
 }
