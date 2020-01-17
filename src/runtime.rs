@@ -166,10 +166,42 @@ impl RuntimeService for CriRuntimeService {
         Ok(Response::new(StopPodSandboxResponse {}))
     }
 
+    // remove_pod_sandbox removes the sandbox. If there are running containers in the sandbox, they should be forcibly
+    // removed.
     async fn remove_pod_sandbox(
         &self,
-        _req: Request<RemovePodSandboxRequest>,
+        req: Request<RemovePodSandboxRequest>,
     ) -> CriResult<RemovePodSandboxResponse> {
+        let id = &req.into_inner().pod_sandbox_id;
+
+        // wrap in a block so the RWLock will drop out of scope.
+        {
+            let sandboxes = self.sandboxes.read().unwrap();
+            let sandbox = match sandboxes.get(id) {
+                Some(s) => s,
+                None => return Err(Status::not_found(format!("Sandbox {} does not exist", id))),
+            };
+
+            // return an error if the sandbox container is still running.
+            if sandbox.state == PodSandboxState::SandboxReady as i32 {
+                return Err(Status::failed_precondition(format!("Sandbox container {} is not fully stopped", id)));
+            }
+        }
+
+        // TODO(bacongobbler): when networking is implemented, here is where we should return an error if the sandbox's
+        // network namespace is not closed yet.
+
+        // remove all containers inside the sandbox.
+        for container in &self.containers {
+            if &container.pod_sandbox_id != id {
+                continue
+            }
+            self.remove_container(Request::new(RemoveContainerRequest{container_id: container.id.to_owned()}));
+        }
+
+        // remove the sandbox.
+        self.sandboxes.write().unwrap().remove(id);
+
         Ok(Response::new(RemovePodSandboxResponse {}))
     }
 
@@ -360,11 +392,32 @@ mod test {
     }
 
     async fn _test_remove_pod_sandbox() {
-        let svc = CriRuntimeService::new();
-        let req = Request::new(RemovePodSandboxRequest::default());
+        let mut svc = CriRuntimeService::new();
+        let mut container = Container::default();
+        container.pod_sandbox_id = "1".to_owned();
+        svc.containers.push(container);
+        {
+            let mut sandboxes = svc.sandboxes.write().unwrap();
+            sandboxes.insert(
+                "1".to_owned(),
+                PodSandbox {
+                    id: "1".to_owned(),
+                    metadata: None,
+                    state: PodSandboxState::SandboxNotready as i32,
+                    created_at: Utc::now().timestamp_nanos(),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    runtime_handler: RuntimeHandler::WASI.to_string(),
+                },
+            );
+        }
+        let req = Request::new(RemovePodSandboxRequest{pod_sandbox_id: "1".to_owned()});
         let res = svc.remove_pod_sandbox(req).await;
-        // We expect an empty response object
+        // we expect an empty response object
         res.expect("remove sandbox result");
+        // TODO(bacongobbler): un-comment this once remove_container() has been implemented.
+        // assert_eq!(0, svc.containers.len());
+        assert_eq!(0, svc.sandboxes.read().unwrap().values().cloned().collect::<Vec<PodSandbox>>().len());
     }
 
     async fn _test_stop_pod_sandbox() {
