@@ -1,20 +1,31 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
+use std::path::PathBuf;
+
 use tonic::{Request, Response, Status};
-// RuntimeService is converted to a package runtime_service_server
-use crate::grpc::{
-    runtime_service_server::RuntimeService, Container, ContainerMetadata, ContainerStatus,
-    ContainerStatusRequest, ContainerStatusResponse, CreateContainerRequest,
-    CreateContainerResponse, ImageSpec, ListContainersRequest, ListContainersResponse,
-    ListPodSandboxRequest, ListPodSandboxResponse, PodSandbox, PodSandboxState,
-    PodSandboxStatusRequest, PodSandboxStatusResponse, RemoveContainerRequest,
-    RemoveContainerResponse, RemovePodSandboxRequest, RemovePodSandboxResponse,
-    RunPodSandboxRequest, RunPodSandboxResponse, StartContainerRequest, StartContainerResponse,
-    StopContainerRequest, StopContainerResponse, StopPodSandboxRequest, StopPodSandboxResponse,
-    VersionRequest, VersionResponse,
-};
 use chrono::Utc;
 use uuid::Uuid;
+
+// RuntimeService is converted to a package runtime_service_server
+use crate::grpc::{
+    runtime_service_server::RuntimeService,
+    Container, ContainerConfig, ContainerMetadata, ContainerState, ContainerStatus,
+    ImageSpec,
+    PodSandbox, PodSandboxState,
+    CreateContainerRequest,     CreateContainerResponse,
+    RemoveContainerRequest,     RemoveContainerResponse,
+    StartContainerRequest,      StartContainerResponse,
+    StopContainerRequest,       StopContainerResponse,
+    ListContainersRequest,      ListContainersResponse,
+    ContainerStatusRequest,     ContainerStatusResponse,
+    RunPodSandboxRequest,       RunPodSandboxResponse,
+    StopPodSandboxRequest,      StopPodSandboxResponse,
+    RemovePodSandboxRequest,    RemovePodSandboxResponse,
+    ListPodSandboxRequest,      ListPodSandboxResponse,
+    PodSandboxStatusRequest,    PodSandboxStatusResponse,
+    VersionRequest,             VersionResponse,
+};
+use crate::oci;
 
 /// The version of the runtime API that this tool knows.
 /// See CRI-O for reference (since docs don't explain this)
@@ -29,12 +40,31 @@ pub type CriResult<T> = std::result::Result<Response<T>, Status>;
 /// Result describes a Runtime result that may return a failure::Error if things go wrong.
 pub type Result<T> = std::result::Result<T, failure::Error>;
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UserContainer {
+    /// the container ID.
+    id: String,
+    /// the pod sandbox ID this container belongs to.
+    pod_sandbox_id: String,
+    /// the resolved image reference.
+    image_ref: String,
+    /// the time this container was created, in nanoseconds.
+    created_at: i64,
+    /// the container's current state.
+    state: i32,
+    /// the CRI container config.
+    config: ContainerConfig,
+    /// Absolute path for the container to store the logs (STDOUT and STDERR) on the host.
+    log_path: PathBuf,
+}
+
 /// Implement a CRI runtime service.
 #[derive(Debug, Default)]
 pub struct CriRuntimeService {
     // NOTE: we could replace this with evmap or crossbeam
     sandboxes: Arc<RwLock<BTreeMap<String, PodSandbox>>>,
-    containers: Vec<Container>,
+    containers: Vec<UserContainer>,
+    root_dir: PathBuf,
 }
 
 impl CriRuntimeService {
@@ -42,6 +72,7 @@ impl CriRuntimeService {
         CriRuntimeService {
             sandboxes: Arc::new(RwLock::new(BTreeMap::default())),
             containers: vec![],
+            root_dir: oci::default_image_dir(),
         }
     }
 }
@@ -214,10 +245,51 @@ impl RuntimeService for CriRuntimeService {
 
     async fn create_container(
         &self,
-        _req: Request<CreateContainerRequest>,
+        req: Request<CreateContainerRequest>,
     ) -> CriResult<CreateContainerResponse> {
+        let container_req = req.into_inner();
+        let container_config = container_req.config.unwrap();
+        let sandbox_config = container_req.sandbox_config.unwrap();
+
+        // generate a unique ID for the container
+        //
+        // TODO(bacongobbler): we should probably commit this to a RWLock'd map; that way concurrent calls to
+        // create_container() won't reserve the same name. Fow now, let's just generate a "unique enough" UUID.
+        //
+        // https://github.com/containerd/cri/blob/b2804c06934245b0ff4a9114c9f1f592a5120815/pkg/server/container_create.go#L63-L81
+        let id = Uuid::new_v4().to_string();
+
+        let mut container = UserContainer{
+            id: id.to_owned(),
+            pod_sandbox_id: container_req.pod_sandbox_id,
+            state: ContainerState::ContainerCreated as i32,
+            created_at: Utc::now().timestamp_nanos(),
+            config: container_config.to_owned(),
+            log_path: PathBuf::from(""), // to be set further down
+            image_ref: "".to_owned(), // FIXME(bacongobbler): resolve this to the local image reference based on config.image.name
+        };
+
+        // create container root directory.
+        let container_root_dir = self.root_dir.join("containers").join(&id);
+        tokio::fs::create_dir_all(&container_root_dir).await?;
+
+        // TODO(bacongobbler): add any image volume mounts.
+        // TODO(bacongobbler): generate container mounts.
+
+        // validate log paths and compose full container log path.
+        if sandbox_config.log_directory != "" && container.config.log_path != "" {
+            container.log_path = PathBuf::from(&sandbox_config.log_directory).join(&container.config.log_path);
+            log::debug!("composed container log path {} using sandbox log directory {} and container config log path {}", container.log_path.display(), sandbox_config.log_directory, container.config.log_path);
+        } else {
+            // logging is disabled
+            log::info!("logging will be disabled due to empty log paths for sandbox {} or container {}", sandbox_config.log_directory, container.config.log_path);
+        }
+
+        // add container to the store.
+        self.containers.clone().push(container);
+
         Ok(Response::new(CreateContainerResponse {
-            container_id: "1".to_owned(),
+            container_id: id.to_owned(),
         }))
     }
 
@@ -247,7 +319,19 @@ impl RuntimeService for CriRuntimeService {
         _req: Request<ListContainersRequest>,
     ) -> CriResult<ListContainersResponse> {
         Ok(Response::new(ListContainersResponse {
-            containers: self.containers.clone(),
+            containers: self.containers.iter().cloned().map(|x| {
+                return Container{
+                    id: x.id,
+                    pod_sandbox_id: x.pod_sandbox_id,
+                    image: x.config.image,
+                    created_at: x.created_at,
+                    image_ref: x.image_ref,
+                    annotations: x.config.annotations,
+                    labels: x.config.labels,
+                    state: x.state,
+                    metadata: x.config.metadata,
+                }
+            }).collect(),
         }))
     }
 
@@ -390,7 +474,7 @@ mod test {
 
     async fn _test_remove_pod_sandbox() {
         let mut svc = CriRuntimeService::new();
-        let mut container = Container::default();
+        let mut container = UserContainer::default();
         container.pod_sandbox_id = "1".to_owned();
         svc.containers.push(container);
         {
@@ -449,6 +533,7 @@ mod test {
                 .get_ref()
                 .container_id
         );
+        assert_eq!(1, svc.containers.len());
     }
 
     async fn _test_start_container() {
