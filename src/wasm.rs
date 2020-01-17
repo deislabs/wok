@@ -8,6 +8,8 @@ use wasi_common::{preopen_dir, WasiCtxBuilder};
 use wasmtime::*;
 use wasmtime_wasi::*;
 
+pub mod wascc;
+
 /// EnvVars is a convenience alias around a hash map of String to String
 pub type EnvVars = HashMap<String, String>;
 
