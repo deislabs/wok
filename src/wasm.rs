@@ -38,10 +38,8 @@ pub struct WasiRuntime {
 impl Runtime for WasiRuntime {
     fn run(&self) -> Result<()> {
         info!("starting run of module");
-        let _instance = match Instance::new(&self.store, &self.module, &self.imports) {
-            Ok(i) => i,
-            Err(e) => return Err(format_err!("unable to run module: {}", e)),
-        };
+        let _instance = Instance::new(&self.store, &self.module, &self.imports)
+            .map_err(|e| format_err!("unable to run module: {}", e))?;
 
         info!("module run complete");
         Ok(())
@@ -72,13 +70,12 @@ impl WasiRuntime {
         log_file_location: &str,
     ) -> Result<Self> {
         let module_data = std::fs::read(module_path)?;
-        let env_vars: Vec<(String, String)> = env.into_iter().collect();
         let engine = HostRef::new(Engine::default());
         let store = HostRef::new(Store::new(&engine));
-        let module = HostRef::new(match Module::new(&store, &module_data) {
-            Ok(m) => m,
-            Err(e) => return Err(format_err!("unable to load module data {}", e)),
-        });
+        let module = HostRef::new(
+            Module::new(&store, &module_data)
+                .map_err(|e| format_err!("unable to load module data {}", e))?,
+        );
 
         // We need to use named temp file because we need multiple file handles
         // and if we are running in the temp dir, we run the possibility of the
@@ -87,22 +84,18 @@ impl WasiRuntime {
         // loop that runs elsewhere. These will get deleted when the reference
         // is dropped
         let stdout = NamedTempFile::new_in(log_file_location)?;
-
         let stderr = NamedTempFile::new_in(log_file_location)?;
 
         let mut ctx_builder = WasiCtxBuilder::new()
             .args(args)
-            .envs(env_vars)
+            .envs(env)
             .stdout(stdout.reopen()?)
             .stderr(stderr.reopen()?);
 
-        for dir in dirs.iter() {
-            let guest_dir = match dir.1 {
-                Some(s) => s.clone(),
-                None => dir.0.clone(),
-            };
+        for (key, value) in dirs.iter() {
+            let guest_dir = value.as_ref().unwrap_or(key);
             // Try and preopen the directory and then try to clone it. This step adds the directory to the context
-            ctx_builder = ctx_builder.preopened_dir(preopen_dir(dir.0)?.try_clone()?, guest_dir);
+            ctx_builder = ctx_builder.preopened_dir(preopen_dir(key)?, guest_dir);
         }
 
         let wasi_ctx = ctx_builder.build()?;

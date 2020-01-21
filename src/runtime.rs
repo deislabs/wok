@@ -184,7 +184,10 @@ impl RuntimeService for CriRuntimeService {
 
             // return an error if the sandbox container is still running.
             if sandbox.state == PodSandboxState::SandboxReady as i32 {
-                return Err(Status::failed_precondition(format!("Sandbox container {} is not fully stopped", id)));
+                return Err(Status::failed_precondition(format!(
+                    "Sandbox container {} is not fully stopped",
+                    id
+                )));
             }
         }
 
@@ -193,10 +196,11 @@ impl RuntimeService for CriRuntimeService {
 
         // remove all containers inside the sandbox.
         for container in &self.containers {
-            if &container.pod_sandbox_id != id {
-                continue
+            if &container.pod_sandbox_id == id {
+                self.remove_container(Request::new(RemoveContainerRequest {
+                    container_id: container.id.to_owned(),
+                }));
             }
-            self.remove_container(Request::new(RemoveContainerRequest{container_id: container.id.to_owned()}));
         }
 
         // remove the sandbox.
@@ -411,13 +415,24 @@ mod test {
                 },
             );
         }
-        let req = Request::new(RemovePodSandboxRequest{pod_sandbox_id: "1".to_owned()});
+        let req = Request::new(RemovePodSandboxRequest {
+            pod_sandbox_id: "1".to_owned(),
+        });
         let res = svc.remove_pod_sandbox(req).await;
         // we expect an empty response object
         res.expect("remove sandbox result");
         // TODO(bacongobbler): un-comment this once remove_container() has been implemented.
         // assert_eq!(0, svc.containers.len());
-        assert_eq!(0, svc.sandboxes.read().unwrap().values().cloned().collect::<Vec<PodSandbox>>().len());
+        assert_eq!(
+            0,
+            svc.sandboxes
+                .read()
+                .unwrap()
+                .values()
+                .cloned()
+                .collect::<Vec<PodSandbox>>()
+                .len()
+        );
     }
 
     async fn _test_stop_pod_sandbox() {
