@@ -37,7 +37,7 @@ pub fn wascc_run(data: &[u8], env: EnvVars, key: &str) -> Result<(), failure::Er
     );
 
     // TODO: Middleware provider for env vars
-    let _ = host::configure(key, HTTP_CAPABILITY, httpenv)
+    host::configure(key, HTTP_CAPABILITY, httpenv)
         .map_err(|e| format_err!("Error configuring HTTP server for module: {}", e))?;
     info!("Instance executing");
     Ok(())
