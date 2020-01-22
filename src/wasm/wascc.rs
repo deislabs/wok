@@ -18,7 +18,6 @@ pub fn register_native_capabilities() -> Result<(), failure::Error> {
     let data = NativeCapability::from_file(httplib)
         .map_err(|e| format_err!("Failed to read HTTP capability {}: {}", httplib, e))?;
     host::add_native_capability(data)
-        .map(|_| ())
         .map_err(|e| format_err!("Failed to load HTTP capability: {}", e))
 }
 
