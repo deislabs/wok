@@ -7,16 +7,18 @@ const HTTP_CAPABILITY: &str = "wascc:http_server";
 /// Kubernetes' view of environment variables is an unordered map of string to string.
 type EnvVars = std::collections::HashMap<String, String>;
 
+#[cfg(target_os = "linux")]
+const HTTP_LIB: &str = "./lib/libwascc_httpsrv.so";
+#[cfg(target_os = "macos")]
+const HTTP_LIB: &str = "./lib/libwascc_httpsrv.dylib";
+
 /// This registers all of the native capabilities known to this host.
 ///
 /// In the future, we'll do this dynamically. For now, though, these are the
 /// caps that we know we need in order to wire up Kubernetes
 pub fn register_native_capabilities() -> Result<(), failure::Error> {
-    let httplib = "./lib/libwascc_httpsrv.dylib";
-    // The match is to unwrap an error from a thread and convert it to a type that
-    // can cross the thread boundary. There is surely a better way.
-    let data = NativeCapability::from_file(httplib)
-        .map_err(|e| format_err!("Failed to read HTTP capability {}: {}", httplib, e))?;
+    let data = NativeCapability::from_file(HTTP_LIB)
+        .map_err(|e| format_err!("Failed to read HTTP capability {}: {}", HTTP_LIB, e))?;
     host::add_native_capability(data)
         .map_err(|e| format_err!("Failed to load HTTP capability: {}", e))
 }
