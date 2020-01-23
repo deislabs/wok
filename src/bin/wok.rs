@@ -4,15 +4,20 @@ extern crate ctrlc;
 
 use std::error;
 use std::fmt;
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::path::Path;
 
+#[cfg(unix)]
 use futures::stream::TryStreamExt;
 #[cfg(unix)]
 use tokio::net::UnixListener;
 use tonic::transport::Server;
 
-use wok::{CriImageService, CriRuntimeService, ImageServiceServer, RuntimeServiceServer};
+use wok::{CriImageService, CriRuntimeService, RuntimeServiceServer};
+#[cfg(unix)]
+use wok::{ImageServiceServer};
 
 #[derive(Debug, Clone)]
 struct BadAddr;
@@ -160,6 +165,7 @@ async fn serve(
     proto: &str,
     addr: &str,
     runtime: CriRuntimeService,
+    _image_service: CriImageService,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match proto {
         "unix" => {
