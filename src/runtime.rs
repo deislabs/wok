@@ -41,6 +41,9 @@ pub type CriResult<T> = std::result::Result<Response<T>, Status>;
 /// Result describes a Runtime result that may return a failure::Error if things go wrong.
 pub type Result<T> = std::result::Result<T, failure::Error>;
 
+/// UserContainer is an internal mapping between the Container and the ContainerConfig objects provided by the kubelet.
+/// We use this to map between what the CRI requested and what we created. (e.g. the volume mount mappings between
+/// the container and the sandbox)
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UserContainer {
     /// the container ID.
