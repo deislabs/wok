@@ -98,14 +98,9 @@ impl RuntimeService for CriRuntimeService {
         req: Request<RunPodSandboxRequest>,
     ) -> CriResult<RunPodSandboxResponse> {
         let sandbox_req = req.into_inner();
-        let sandbox_conf = match sandbox_req.config {
-            Some(c) => c,
-            None => {
-                return Err(Status::invalid_argument(
-                    "Sandbox request is missing config object",
-                ))
-            }
-        };
+        let sandbox_conf = sandbox_req.config.ok_or(Status::invalid_argument(
+            "Sandbox request is missing config object",
+        ))?;
         let handler = RuntimeHandler::from_string(&sandbox_req.runtime_handler)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
@@ -114,7 +109,7 @@ impl RuntimeService for CriRuntimeService {
         // to set up networking here
 
         // Create the logs directory for this pod
-        std::fs::create_dir_all(sandbox_conf.log_directory.clone())
+        std::fs::create_dir_all(&sandbox_conf.log_directory)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
         // Basically, everything above here is all we need to set up a sandbox.
         // All of the security context stuff pretty much doesn't matter for
@@ -174,29 +169,31 @@ impl RuntimeService for CriRuntimeService {
     ) -> CriResult<RemovePodSandboxResponse> {
         let id = &req.into_inner().pod_sandbox_id;
 
-        // wrap in a block so the RWLock will drop out of scope.
-        {
-            let sandboxes = self.sandboxes.read().unwrap();
-            let sandbox = match sandboxes.get(id) {
-                Some(s) => s,
-                None => return Err(Status::not_found(format!("Sandbox {} does not exist", id))),
-            };
+        let sandboxes = self.sandboxes.read().unwrap();
+        let sandbox = match sandboxes.get(id) {
+            Some(s) => s,
+            None => return Err(Status::not_found(format!("Sandbox {} does not exist", id))),
+        };
 
-            // return an error if the sandbox container is still running.
-            if sandbox.state == PodSandboxState::SandboxReady as i32 {
-                return Err(Status::failed_precondition(format!("Sandbox container {} is not fully stopped", id)));
-            }
+        // return an error if the sandbox container is still running.
+        if sandbox.state == PodSandboxState::SandboxReady as i32 {
+            return Err(Status::failed_precondition(format!(
+                "Sandbox container {} is not fully stopped",
+                id
+            )));
         }
+        drop(sandboxes);
 
         // TODO(bacongobbler): when networking is implemented, here is where we should return an error if the sandbox's
         // network namespace is not closed yet.
 
         // remove all containers inside the sandbox.
         for container in &self.containers {
-            if &container.pod_sandbox_id != id {
-                continue
+            if &container.pod_sandbox_id == id {
+                self.remove_container(Request::new(RemoveContainerRequest {
+                    container_id: container.id.clone(),
+                }));
             }
-            self.remove_container(Request::new(RemoveContainerRequest{container_id: container.id.to_owned()}));
         }
 
         // remove the sandbox.
@@ -411,13 +408,24 @@ mod test {
                 },
             );
         }
-        let req = Request::new(RemovePodSandboxRequest{pod_sandbox_id: "1".to_owned()});
+        let req = Request::new(RemovePodSandboxRequest {
+            pod_sandbox_id: "1".to_owned(),
+        });
         let res = svc.remove_pod_sandbox(req).await;
         // we expect an empty response object
         res.expect("remove sandbox result");
         // TODO(bacongobbler): un-comment this once remove_container() has been implemented.
         // assert_eq!(0, svc.containers.len());
-        assert_eq!(0, svc.sandboxes.read().unwrap().values().cloned().collect::<Vec<PodSandbox>>().len());
+        assert_eq!(
+            0,
+            svc.sandboxes
+                .read()
+                .unwrap()
+                .values()
+                .cloned()
+                .collect::<Vec<PodSandbox>>()
+                .len()
+        );
     }
 
     async fn _test_stop_pod_sandbox() {

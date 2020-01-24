@@ -4,55 +4,48 @@ use crate::grpc::{
 };
 use crate::runtime::CriResult;
 use std::ffi::CString;
+use std::path::PathBuf;
 use tonic::{Request, Response, Status};
-extern crate dirs;
 
-pub fn default_image_dir() -> String {
-    String::from(
-        std::path::PathBuf::new()
-            .join(dirs::home_dir().expect("cannot get home directory"))
-            .join(".wok")
-            .join("modules")
-            .to_str()
-            .unwrap(),
-    )
+pub fn default_image_dir() -> PathBuf {
+    dirs::home_dir()
+        .expect("cannot get home directory")
+        .join(".wok")
+        .join("modules")
 }
 
 /// Implement a CRI Image Service
 #[derive(Debug, Default)]
 pub struct CriImageService {
-    root_dir: String,
+    root_dir: PathBuf,
 }
 
 impl CriImageService {
-    pub fn new(dir: String) -> Self {
-        CriImageService::ensure_root_dir(&dir)
+    pub fn new(root_dir: PathBuf) -> Self {
+        CriImageService::ensure_root_dir(&root_dir)
             .expect("cannot create root directory for image service");
-        CriImageService { root_dir: dir }
+        CriImageService { root_dir }
     }
-    fn pull_module(&self, module_ref: String) -> Result<(), failure::Error> {
+
+    fn pull_module(&self, module_ref: &str) -> Result<(), failure::Error> {
         // currently, the library only accepts modules tagged in the following structure:
         // <registry>/<repository>:<tag>
         // for example: webassembly.azurecr.io/hello:v1
-        let registry_parts: Vec<&str> = module_ref.split('/').collect();
-        let reg = registry_parts[0];
-        let repo_parts: Vec<&str> = registry_parts[1].split(':').collect();
-        let repo = repo_parts[0];
-        let tag = repo_parts[1];
+        let mut registry_parts = module_ref.split('/');
+        let reg = registry_parts.next().unwrap();
+        let mut repo_parts = registry_parts.next().unwrap().split(':');
+        let repo = repo_parts.next().unwrap();
+        let tag = repo_parts.next().unwrap();
 
-        let pull_path = std::path::PathBuf::new()
-            .join(self.root_dir.clone())
-            .join(reg)
-            .join(repo)
-            .join(tag);
+        let pull_path = self.root_dir.join(reg).join(repo).join(tag);
 
-        std::fs::create_dir_all(pull_path.clone())?;
+        std::fs::create_dir_all(&pull_path)?;
         let target_mod = pull_path.join("module.wasm");
-        pull_wasm(module_ref, String::from(target_mod.to_str().unwrap()))
+        pull_wasm(module_ref, target_mod.to_str().unwrap())
     }
 
-    fn ensure_root_dir(dir: &str) -> Result<(), failure::Error> {
-        println!("ensuring root directory {}", dir);
+    fn ensure_root_dir(dir: &PathBuf) -> Result<(), failure::Error> {
+        println!("ensuring root directory {:?}", dir);
         std::fs::create_dir_all(dir)?;
         Ok(())
     }
@@ -70,15 +63,14 @@ impl ImageService for CriImageService {
     async fn pull_image(&self, request: Request<PullImageRequest>) -> CriResult<PullImageResponse> {
         let image_ref = request.into_inner().image.unwrap().image;
 
-        self.pull_module(image_ref.clone())
-            .expect("cannot pull module");
+        self.pull_module(&image_ref).expect("cannot pull module");
         let resp = PullImageResponse { image_ref };
 
         Ok(Response::new(resp))
     }
 }
 
-pub fn pull_wasm(reference: String, file: String) -> Result<(), failure::Error> {
+pub fn pull_wasm(reference: &str, file: &str) -> Result<(), failure::Error> {
     println!("pulling {} into {}", reference, file);
     let c_ref = CString::new(reference)?;
     let c_file = CString::new(file)?;
@@ -95,10 +87,9 @@ pub fn pull_wasm(reference: String, file: String) -> Result<(), failure::Error> 
     let result = unsafe { Pull(go_str_ref, go_str_file) };
     match result {
         0 => Ok(()),
-
-        _ => Err(failure::Error::from(OCIError::Custom(String::from(
-            "cannot pull module",
-        )))),
+        _ => Err(failure::Error::from(OCIError::Custom(
+            "cannot pull module".into(),
+        ))),
     }
 }
 
@@ -107,7 +98,7 @@ fn test_pull_wasm() {
     // this is a public registry, so this test is both making sure the library is working,
     // as well as ensuring the registry is publicly accessible
     let module = "webassembly.azurecr.io/hello-wasm:v1";
-    pull_wasm(String::from(module), String::from("target/pulled.wasm")).unwrap();
+    pull_wasm(module, "target/pulled.wasm").unwrap();
 }
 
 #[derive(Debug)]

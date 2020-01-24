@@ -1,13 +1,10 @@
-#[macro_use]
-extern crate clap;
-extern crate ctrlc;
-
 use std::error;
 use std::fmt;
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
 use std::path::Path;
+use std::path::PathBuf;
 
 #[cfg(unix)]
 use futures::stream::TryStreamExt;
@@ -15,9 +12,9 @@ use futures::stream::TryStreamExt;
 use tokio::net::UnixListener;
 use tonic::transport::Server;
 
-use wok::{CriImageService, CriRuntimeService, RuntimeServiceServer};
 #[cfg(unix)]
-use wok::{ImageServiceServer};
+use wok::ImageServiceServer;
+use wok::{CriImageService, CriRuntimeService, RuntimeServiceServer};
 
 #[derive(Debug, Clone)]
 struct BadAddr;
@@ -39,13 +36,13 @@ impl error::Error for BadAddr {
     }
 }
 
-#[derive(Clap)]
+#[derive(clap::Clap)]
 struct Opts {
     #[clap(short = "a", long = "addr", default_value = "unix:///tmp/wok.sock")]
     addr: String,
 
     #[clap(short = "d", long = "dir")]
-    dir: String,
+    dir: PathBuf,
 }
 
 #[tokio::main]
@@ -63,10 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("listening on {}", parts[1]);
 
     // Temporary work-around for async/.await
-    match serve(parts[0], parts[1], runtime, image_service).await {
-        Err(e) => Err(e),
-        _ => Ok(()),
-    }
+    serve(parts[0], parts[1], runtime, image_service)
+        .await
+        .map(|_| ())
 }
 
 #[cfg(unix)]
@@ -132,10 +128,10 @@ async fn serve(
 
             let mut uds = UnixListener::bind(addr)?;
 
-            let path: String = addr.to_owned();
+            let path = addr.to_owned();
             ctrlc::set_handler(move || {
                 // ignore the error if we fail to remove the file; there can be cases where the user exits before the UDS is bound
-                fs::remove_file(Path::new(&path)).unwrap_or(());
+                fs::remove_file(&path).unwrap_or(());
                 std::process::exit(0);
             })
             .expect("Error setting exit handler");
