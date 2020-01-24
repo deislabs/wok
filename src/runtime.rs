@@ -59,7 +59,9 @@ pub struct UserContainer {
     /// the CRI container config.
     config: ContainerConfig,
     /// Absolute path for the container to store the logs (STDOUT and STDERR) on the host.
-    log_path: PathBuf,
+    ///
+    /// If the log_path is None, logging is disabled, either because the sandbox or the container did not specify a log path.
+    log_path: Option<PathBuf>,
     /// volume paths for the container. host_path is a relative filepath from the container's root directory to the volume mount.
     /// container_path is the filepath specified from the container config's requested volume. This is used to map between the
     /// volume and the requested host_path/container_path.
@@ -294,7 +296,7 @@ impl RuntimeService for CriRuntimeService {
             state: ContainerState::ContainerCreated as i32,
             created_at: Utc::now().timestamp_nanos(),
             config: container_config.to_owned(),
-            log_path: PathBuf::from(""), // to be set further down
+            log_path: None, // to be set further down
             image_ref: "".to_owned(), // FIXME(bacongobbler): resolve this to the local image reference based on config.image.name
             volumes: vec![], // to be added further down
         };
@@ -317,8 +319,8 @@ impl RuntimeService for CriRuntimeService {
 
         // validate log paths and compose full container log path.
         if sandbox_config.log_directory != "" && container.config.log_path != "" {
-            container.log_path = PathBuf::from(&sandbox_config.log_directory).join(&container.config.log_path);
-            log::debug!("composed container log path {} using sandbox log directory {} and container config log path {}", container.log_path.display(), sandbox_config.log_directory, container.config.log_path);
+            container.log_path = Some(PathBuf::from(&sandbox_config.log_directory).join(&container.config.log_path));
+            log::debug!("composed container log path using sandbox log directory {} and container config log path {}", sandbox_config.log_directory, container.config.log_path);
         } else {
             // logging is disabled
             log::info!("logging will be disabled due to empty log paths for sandbox {} or container {}", sandbox_config.log_directory, container.config.log_path);
