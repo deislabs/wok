@@ -288,7 +288,7 @@ impl RuntimeService for CriRuntimeService {
         for mount in container_config.mounts {
             let volume_id = Uuid::new_v4().to_string();
             container.volumes.push(Mount{
-                host_path: container_root_dir.join("volumes").join(volume_id).into_os_string().into_string().unwrap(),
+                host_path: PathBuf::from("volumes").join(volume_id).into_os_string().into_string().unwrap(),
                 container_path: mount.container_path.to_owned(),
                 propagation: mount.propagation,
                 readonly: mount.readonly,

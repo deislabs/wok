@@ -41,7 +41,7 @@ struct Opts {
     #[clap(short = "a", long = "addr", default_value = "unix:///tmp/wok.sock")]
     addr: String,
 
-    #[clap(short = "d", long = "dir")]
+    #[clap(short = "d", long = "dir", default_value = "/tmp")]
     dir: PathBuf,
 }
 
