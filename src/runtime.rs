@@ -94,7 +94,7 @@ impl From<UserContainer> for Container {
 pub struct CriRuntimeService {
     // NOTE: we could replace this with evmap or crossbeam
     sandboxes: Arc<RwLock<BTreeMap<String, PodSandbox>>>,
-    containers: Vec<UserContainer>,
+    containers: Arc<RwLock<Vec<UserContainer>>>,
     root_dir: PathBuf,
 }
 
@@ -102,7 +102,7 @@ impl CriRuntimeService {
     pub fn new() -> Self {
         CriRuntimeService {
             sandboxes: Arc::new(RwLock::new(BTreeMap::default())),
-            containers: vec![],
+            containers: Arc::new(RwLock::new(vec![])),
             root_dir: oci::default_image_dir(),
         }
     }
@@ -177,12 +177,10 @@ impl RuntimeService for CriRuntimeService {
         // All of the security context stuff pretty much doesn't matter for
         // WASM, but we can revisit this as things keep evolving
 
-        // Ok, now let's store things in memory
-        let sandbox_map = self.sandboxes.clone();
         // TODO(taylor): According to the RwLock docs, we should panic on failure
         // to poison the RwLock. This also means we'd need to have handling for
         // recovering from a poisoned RwLock, which I am leaving for later
-        let mut sandboxes = sandbox_map
+        let mut sandboxes = self.sandboxes
             .write()
             .map_err(|e| {
                 Status::internal(format!(
@@ -250,7 +248,7 @@ impl RuntimeService for CriRuntimeService {
         // network namespace is not closed yet.
 
         // remove all containers inside the sandbox.
-        for container in &self.containers {
+        for container in self.containers.read().unwrap().iter() {
             if &container.pod_sandbox_id == id {
                 self.remove_container(Request::new(RemoveContainerRequest {
                     container_id: container.id.clone(),
@@ -327,7 +325,7 @@ impl RuntimeService for CriRuntimeService {
         }
 
         // add container to the store.
-        self.containers.clone().push(container);
+        self.containers.write().unwrap().push(container);
 
         Ok(Response::new(CreateContainerResponse {
             container_id: id.to_owned(),
@@ -360,7 +358,7 @@ impl RuntimeService for CriRuntimeService {
         _req: Request<ListContainersRequest>,
     ) -> CriResult<ListContainersResponse> {
         Ok(Response::new(ListContainersResponse {
-            containers: self.containers.iter().cloned().map(|x| Container::from(x)).collect(),
+            containers: self.containers.read().unwrap().iter().cloned().map(|x| Container::from(x)).collect(),
         }))
     }
 
@@ -502,10 +500,10 @@ mod test {
     }
 
     async fn _test_remove_pod_sandbox() {
-        let mut svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new();
         let mut container = UserContainer::default();
         container.pod_sandbox_id = "1".to_owned();
-        svc.containers.push(container);
+        svc.containers.write().unwrap().push(container);
         {
             let mut sandboxes = svc.sandboxes.write().unwrap();
             sandboxes.insert(
@@ -562,7 +560,7 @@ mod test {
                 .get_ref()
                 .container_id
         );
-        assert_eq!(1, svc.containers.len());
+        assert_eq!(1, svc.containers.read().unwrap().len());
     }
 
     async fn _test_start_container() {
