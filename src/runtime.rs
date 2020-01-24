@@ -21,6 +21,13 @@ use crate::grpc::{
     StopContainerRequest, StopContainerResponse, StopPodSandboxRequest, StopPodSandboxResponse,
     VersionRequest, VersionResponse,
 };
+use crate::wasm::Runtime;
+use chrono::Utc;
+use futures::future::{AbortHandle, Abortable};
+use log::error;
+use std::sync::mpsc::{channel, Sender};
+use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 /// The version of the runtime API that this tool knows.
 /// See CRI-O for reference (since docs don't explain this)
@@ -133,6 +140,42 @@ impl RuntimeHandler {
 impl Default for RuntimeHandler {
     fn default() -> Self {
         Self::WASI
+    }
+}
+
+struct RuntimeContainer {
+    handle: JoinHandle<Result<()>>,
+    sender: Sender<()>,
+}
+
+impl RuntimeContainer {
+    pub fn new<T: Runtime + Send + Sync + 'static>(rt: T) -> Self {
+        let (tx, rx) = channel::<()>();
+        RuntimeContainer {
+            handle: tokio::task::spawn_blocking(move || {
+                let _ = rx.recv().unwrap();
+                if let Err(e) = rt.run() {
+                    // TODO(taylor): Implement messaging here to indicate that there was a problem running the module
+                    error!("Error while running module: {}", e.to_string());
+                    unimplemented!()
+                }
+                Ok(())
+            }),
+            sender: tx,
+        }
+    }
+
+    pub fn start(self) -> RuntimeContainerCancellationToken {
+        self.sender.send(()).unwrap();
+        RuntimeContainerCancellationToken(self.handle)
+    }
+}
+
+struct RuntimeContainerCancellationToken(JoinHandle<Result<()>>);
+
+impl RuntimeContainerCancellationToken {
+    fn stop(self) {
+        unimplemented!()
     }
 }
 
