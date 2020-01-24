@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::grpc::{
     runtime_service_server::RuntimeService,
     Container, ContainerConfig, ContainerMetadata, ContainerState, ContainerStatus,
+    Mount,
     ImageSpec,
     PodSandbox, PodSandboxState,
     CreateContainerRequest,     CreateContainerResponse,
@@ -56,6 +57,15 @@ pub struct UserContainer {
     config: ContainerConfig,
     /// Absolute path for the container to store the logs (STDOUT and STDERR) on the host.
     log_path: PathBuf,
+    /// volume paths for the container. host_path is a relative filepath from the container's root directory to the volume mount.
+    /// container_path is the filepath specified from the container config's requested volume. This is used to map between the
+    /// volume and the requested host_path/container_path.
+    ///
+    /// e.g.,
+    ///     volumes = vec![Mount{container_path: "/app", host_path: "volumes/aaaa-bbbb-cccc-dddd", ...}]
+    ///     config.mounts[0].container_path = "/app"
+    ///     config.mounts[0].host_path = "/tmp/app"
+    volumes: Vec<Mount>,
 }
 
 /// Implement a CRI runtime service.
@@ -267,14 +277,24 @@ impl RuntimeService for CriRuntimeService {
             config: container_config.to_owned(),
             log_path: PathBuf::from(""), // to be set further down
             image_ref: "".to_owned(), // FIXME(bacongobbler): resolve this to the local image reference based on config.image.name
+            volumes: vec![], // to be added further down
         };
 
         // create container root directory.
         let container_root_dir = self.root_dir.join("containers").join(&id);
         tokio::fs::create_dir_all(&container_root_dir).await?;
 
-        // TODO(bacongobbler): add any image volume mounts.
-        // TODO(bacongobbler): generate container mounts.
+        // generate volume mounts.
+        for mount in container_config.mounts {
+            let volume_id = Uuid::new_v4().to_string();
+            container.volumes.push(Mount{
+                host_path: container_root_dir.join("volumes").join(volume_id).into_os_string().into_string().unwrap(),
+                container_path: mount.container_path.to_owned(),
+                propagation: mount.propagation,
+                readonly: mount.readonly,
+                selinux_relabel: mount.selinux_relabel,
+            })
+        }
 
         // validate log paths and compose full container log path.
         if sandbox_config.log_directory != "" && container.config.log_path != "" {
