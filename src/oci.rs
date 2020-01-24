@@ -2,10 +2,12 @@ use crate::grpc::{
     image_service_server::ImageService, ListImagesRequest, ListImagesResponse, PullImageRequest,
     PullImageResponse,
 };
-use crate::runtime::CriResult;
 use std::ffi::CString;
 use std::path::PathBuf;
 use tonic::{Request, Response, Status};
+
+use crate::runtime::CriResult;
+use crate::util;
 
 pub fn default_image_dir() -> PathBuf {
     dirs::home_dir()
@@ -22,7 +24,7 @@ pub struct CriImageService {
 
 impl CriImageService {
     pub fn new(root_dir: PathBuf) -> Self {
-        CriImageService::ensure_root_dir(&root_dir)
+        util::ensure_root_dir(&root_dir)
             .expect("cannot create root directory for image service");
         CriImageService { root_dir }
     }
@@ -42,12 +44,6 @@ impl CriImageService {
         std::fs::create_dir_all(&pull_path)?;
         let target_mod = pull_path.join("module.wasm");
         pull_wasm(module_ref, target_mod.to_str().unwrap())
-    }
-
-    fn ensure_root_dir(dir: &PathBuf) -> Result<(), failure::Error> {
-        println!("ensuring root directory {:?}", dir);
-        std::fs::create_dir_all(dir)?;
-        Ok(())
     }
 }
 

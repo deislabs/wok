@@ -6,6 +6,8 @@ use tonic::{Request, Response, Status};
 use chrono::Utc;
 use uuid::Uuid;
 
+use crate::util;
+
 // RuntimeService is converted to a package runtime_service_server
 use crate::grpc::{
     runtime_service_server::RuntimeService,
@@ -26,7 +28,6 @@ use crate::grpc::{
     PodSandboxStatusRequest,    PodSandboxStatusResponse,
     VersionRequest,             VersionResponse,
 };
-use crate::oci;
 
 /// The version of the runtime API that this tool knows.
 /// See CRI-O for reference (since docs don't explain this)
@@ -99,11 +100,13 @@ pub struct CriRuntimeService {
 }
 
 impl CriRuntimeService {
-    pub fn new() -> Self {
+    pub fn new(dir: PathBuf) -> Self {
+        util::ensure_root_dir(&dir)
+            .expect("cannot create root directory for runtime service");
         CriRuntimeService {
             sandboxes: Arc::new(RwLock::new(BTreeMap::default())),
             containers: Arc::new(RwLock::new(vec![])),
-            root_dir: oci::default_image_dir(),
+            root_dir: dir,
         }
     }
 }
@@ -358,7 +361,7 @@ impl RuntimeService for CriRuntimeService {
         _req: Request<ListContainersRequest>,
     ) -> CriResult<ListContainersResponse> {
         Ok(Response::new(ListContainersResponse {
-            containers: self.containers.read().unwrap().iter().cloned().map(|x| Container::from(x)).collect(),
+            containers: self.containers.read().unwrap().iter().cloned().map(Container::from).collect(),
         }))
     }
 
@@ -468,7 +471,7 @@ mod test {
     }
 
     async fn _test_version() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let res = svc.version(Request::new(VersionRequest::default())).await;
         assert_eq!(
             res.as_ref()
@@ -486,21 +489,21 @@ mod test {
     }
 
     async fn _test_list_pod_sandbox() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(ListPodSandboxRequest::default());
         let res = svc.list_pod_sandbox(req).await;
         assert_eq!(0, res.expect("successful pod list").get_ref().items.len());
     }
 
     async fn _test_pod_sandbox_status() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(PodSandboxStatusRequest::default());
         let res = svc.pod_sandbox_status(req).await;
         assert_eq!(None, res.expect("status result").get_ref().status);
     }
 
     async fn _test_remove_pod_sandbox() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let mut container = UserContainer::default();
         container.pod_sandbox_id = "1".to_owned();
         svc.containers.write().unwrap().push(container);
@@ -540,7 +543,7 @@ mod test {
     }
 
     async fn _test_stop_pod_sandbox() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(StopPodSandboxRequest {
             pod_sandbox_id: "test".to_owned(),
         });
@@ -551,7 +554,7 @@ mod test {
     }
 
     async fn _test_create_container() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(CreateContainerRequest::default());
         let res = svc.create_container(req).await;
         assert_eq!(
@@ -564,7 +567,7 @@ mod test {
     }
 
     async fn _test_start_container() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(StartContainerRequest::default());
         let res = svc.start_container(req).await;
         // We expect an empty response object
@@ -572,7 +575,7 @@ mod test {
     }
 
     async fn _test_stop_container() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(StopContainerRequest::default());
         let res = svc.stop_container(req).await;
         // We expect an empty response object
@@ -580,7 +583,7 @@ mod test {
     }
 
     async fn _test_remove_container() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(RemoveContainerRequest::default());
         let res = svc.remove_container(req).await;
         // We expect an empty response object
@@ -588,7 +591,7 @@ mod test {
     }
 
     async fn _test_list_containers() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(ListContainersRequest::default());
         let res = svc.list_containers(req).await;
         assert_eq!(
@@ -601,7 +604,7 @@ mod test {
     }
 
     async fn _test_container_status() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(ContainerStatusRequest::default());
         let res = svc.container_status(req).await;
         assert_eq!(
@@ -615,7 +618,7 @@ mod test {
     }
 
     async fn _test_run_pod_sandbox() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let mut sandbox_req = RunPodSandboxRequest::default();
         sandbox_req.runtime_handler = RuntimeHandler::WASI.to_string();
 
@@ -635,7 +638,7 @@ mod test {
     }
 
     async fn _test_create_and_list() {
-        let svc = CriRuntimeService::new();
+        let svc = CriRuntimeService::new(PathBuf::from(""));
         let mut sandbox_req = RunPodSandboxRequest::default();
         sandbox_req.runtime_handler = RuntimeHandler::WASI.to_string();
 
