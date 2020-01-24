@@ -68,6 +68,22 @@ pub struct UserContainer {
     volumes: Vec<Mount>,
 }
 
+impl From<UserContainer> for Container {
+    fn from(item: UserContainer) -> Self {
+        Container{
+            id: item.id,
+            pod_sandbox_id: item.pod_sandbox_id,
+            image: item.config.image,
+            created_at: item.created_at,
+            image_ref: item.image_ref,
+            annotations: item.config.annotations,
+            labels: item.config.labels,
+            state: item.state,
+            metadata: item.config.metadata,
+        }
+    }
+}
+
 /// Implement a CRI runtime service.
 #[derive(Debug, Default)]
 pub struct CriRuntimeService {
@@ -339,19 +355,7 @@ impl RuntimeService for CriRuntimeService {
         _req: Request<ListContainersRequest>,
     ) -> CriResult<ListContainersResponse> {
         Ok(Response::new(ListContainersResponse {
-            containers: self.containers.iter().cloned().map(|x| {
-                return Container{
-                    id: x.id,
-                    pod_sandbox_id: x.pod_sandbox_id,
-                    image: x.config.image,
-                    created_at: x.created_at,
-                    image_ref: x.image_ref,
-                    annotations: x.config.annotations,
-                    labels: x.config.labels,
-                    state: x.state,
-                    metadata: x.config.metadata,
-                }
-            }).collect(),
+            containers: self.containers.iter().cloned().map(|x| Container::from(x)).collect(),
         }))
     }
 
