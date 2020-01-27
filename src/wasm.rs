@@ -3,7 +3,7 @@ use log::info;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tempfile::NamedTempFile;
 use wasi_common::*;
 use wasmtime::*;
@@ -121,12 +121,12 @@ impl WasiRuntime {
     ///     (e.g. /tmp/foo/myfile -> /app/config). If the optional value is not given,
     ///     the same path will be allowed in the runtime
     /// * `log_file_location` - location for storing logs
-    pub fn new<P: AsRef<Path>>(
-        module_path: P,
+    pub fn new<M: AsRef<Path>, L: AsRef<Path> + Copy>(
+        module_path: M,
         env: EnvVars,
         args: Vec<String>,
         dirs: DirMapping,
-        log_file_location: &PathBuf,
+        log_file_location: L,
     ) -> Result<Self> {
         let module_data = std::fs::read(module_path)?;
 

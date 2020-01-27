@@ -437,7 +437,7 @@ impl RuntimeService for CriRuntimeService {
                     HashMap::new(),
                     container.config.args.clone(),
                     HashMap::new(),
-                    &container.log_path.as_ref().unwrap_or(&PathBuf::new()),
+                    container.log_path.as_ref().unwrap_or(&PathBuf::new()),
                 )
                 .unwrap();
                 RuntimeContainer::new(runtime).start();
@@ -806,7 +806,7 @@ impl RuntimeContainer {
     pub fn new<T: Runtime + Send + 'static>(rt: T) -> Self {
         let (sender, receiver) = channel::<()>();
         let handle = tokio::task::spawn_blocking(move || {
-            let _ = receiver.recv().unwrap();
+            receiver.recv().unwrap();
             if let Err(e) = rt.run() {
                 // TODO(taylor): Implement messaging here to indicate that there was a problem running the module
                 error!("Error while running module: {}", e);
