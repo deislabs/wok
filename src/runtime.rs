@@ -419,15 +419,19 @@ impl RuntimeService for CriRuntimeService {
         let runtime = RuntimeHandler::from_string(&sandbox.runtime_handler)
             .map_err(|_| Status::invalid_argument("Invalid runtime handler"))?;
         match runtime {
-            RuntimeHandler::WASCC => unimplemented!(),
+            RuntimeHandler::WASCC => todo!("Handle wasCC"),
             RuntimeHandler::WASI => {
                 use std::convert::TryFrom;
+
+                // TODO: handle error
                 let image_ref = crate::oci::ImageRef::try_from(&container.image_ref).unwrap();
+                // TODO: handle if not using default image dir
                 let path = image_ref
                     .file_path(&crate::oci::default_image_dir())
                     .into_os_string()
                     .into_string()
                     .unwrap();
+                // TODO: get env and dirs
                 let runtime = crate::wasm::WasiRuntime::new(
                     path,
                     HashMap::new(),
