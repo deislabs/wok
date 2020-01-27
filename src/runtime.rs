@@ -430,10 +430,10 @@ impl RuntimeService for CriRuntimeService {
                     .unwrap();
                 let runtime = crate::wasm::WasiRuntime::new(
                     path,
-                    unimplemented!(),
-                    container.config.args,
-                    unimplemented!(),
-                    &container.log_path.unwrap_or(PathBuf::new()),
+                    HashMap::new(),
+                    container.config.args.clone(),
+                    HashMap::new(),
+                    &container.log_path.as_ref().unwrap_or(&PathBuf::new()),
                 )
                 .unwrap();
                 RuntimeContainer::new(runtime).start();
