@@ -41,15 +41,15 @@ struct Opts {
     #[clap(short = "a", long = "addr", default_value = "unix:///tmp/wok.sock")]
     addr: String,
 
-    #[clap(short = "d", long = "dir")]
+    #[clap(short = "d", long = "dir", default_value = "/tmp")]
     dir: PathBuf,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: Opts = Opts::parse();
-    let runtime = CriRuntimeService::new();
-    let image_service = CriImageService::new(opts.dir);
+    let runtime = CriRuntimeService::new(opts.dir.clone());
+    let image_service = CriImageService::new(opts.dir.clone());
 
     let parts: Vec<&str> = opts.addr.split("://").collect();
 
