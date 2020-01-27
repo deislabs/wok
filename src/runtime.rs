@@ -22,11 +22,9 @@ use crate::grpc::{
     VersionRequest, VersionResponse,
 };
 use crate::wasm::Runtime;
-use chrono::Utc;
 use log::error;
 use std::sync::mpsc::{channel, Sender};
 use tokio::task::JoinHandle;
-use uuid::Uuid;
 
 /// The version of the runtime API that this tool knows.
 /// See CRI-O for reference (since docs don't explain this)
@@ -411,8 +409,30 @@ impl RuntimeService for CriRuntimeService {
         let container = containers
             .iter()
             .find(|c| c.id == id)
-            .unwrap_or_else(|| CriResult::Err(todo!()));
+            .ok_or_else(|| Status::not_found("Container not found"))?;
 
+        let sandbox = self
+            .sandboxes
+            .read()
+            .unwrap()
+            .get(&container.pod_sandbox_id)
+            .ok_or_else(|| todo!())?;
+
+        let runtime = RuntimeHandler::from_string(&sandbox.runtime_handler).map_err(|_| todo!())?;
+        match runtime {
+            RuntimeHandler::WASCC => unimplemented!(),
+            RuntimeHandler::WASI => {
+                let runtime = crate::wasm::WasiRuntime::new(
+                    unimplemented!(),
+                    unimplemented!(),
+                    unimplemented!(),
+                    unimplemented!(),
+                    unimplemented!(),
+                )
+                .unwrap();
+                RuntimeContainer::new(runtime).start();
+            }
+        };
         Ok(Response::new(StartContainerResponse {}))
     }
 
