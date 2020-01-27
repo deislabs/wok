@@ -23,7 +23,6 @@ use crate::grpc::{
 };
 use crate::wasm::Runtime;
 use chrono::Utc;
-use futures::future::{AbortHandle, Abortable};
 use log::error;
 use std::sync::mpsc::{channel, Sender};
 use tokio::task::JoinHandle;
@@ -140,42 +139,6 @@ impl RuntimeHandler {
 impl Default for RuntimeHandler {
     fn default() -> Self {
         Self::WASI
-    }
-}
-
-struct RuntimeContainer {
-    handle: JoinHandle<Result<()>>,
-    sender: Sender<()>,
-}
-
-impl RuntimeContainer {
-    pub fn new<T: Runtime + Send + Sync + 'static>(rt: T) -> Self {
-        let (tx, rx) = channel::<()>();
-        RuntimeContainer {
-            handle: tokio::task::spawn_blocking(move || {
-                let _ = rx.recv().unwrap();
-                if let Err(e) = rt.run() {
-                    // TODO(taylor): Implement messaging here to indicate that there was a problem running the module
-                    error!("Error while running module: {}", e.to_string());
-                    unimplemented!()
-                }
-                Ok(())
-            }),
-            sender: tx,
-        }
-    }
-
-    pub fn start(self) -> RuntimeContainerCancellationToken {
-        self.sender.send(()).unwrap();
-        RuntimeContainerCancellationToken(self.handle)
-    }
-}
-
-struct RuntimeContainerCancellationToken(JoinHandle<Result<()>>);
-
-impl RuntimeContainerCancellationToken {
-    fn stop(self) {
-        unimplemented!()
     }
 }
 
@@ -441,8 +404,15 @@ impl RuntimeService for CriRuntimeService {
 
     async fn start_container(
         &self,
-        _req: Request<StartContainerRequest>,
+        req: Request<StartContainerRequest>,
     ) -> CriResult<StartContainerResponse> {
+        let id = req.into_inner().container_id;
+        let containers = self.containers.read().unwrap();
+        let container = containers
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap_or_else(|| CriResult::Err(todo!()));
+
         Ok(Response::new(StartContainerResponse {}))
     }
 
@@ -794,5 +764,39 @@ mod test {
         assert_eq!(1, sandboxes.len());
         // And make sure the UID returned actually exists
         assert_eq!(id, sandboxes[0].id);
+    }
+}
+
+pub struct RuntimeContainer {
+    handle: JoinHandle<Result<()>>,
+    sender: Sender<()>,
+}
+
+impl RuntimeContainer {
+    pub fn new<T: Runtime + Send + Sync + 'static>(rt: T) -> Self {
+        let (sender, receiver) = channel::<()>();
+        let handle = tokio::task::spawn_blocking(move || {
+            let _ = receiver.recv().unwrap();
+            if let Err(e) = rt.run() {
+                // TODO(taylor): Implement messaging here to indicate that there was a problem running the module
+                error!("Error while running module: {}", e);
+                todo!("Error type")
+            }
+            Ok(())
+        });
+        RuntimeContainer { handle, sender }
+    }
+
+    pub fn start(self) -> RuntimeContainerCancellationToken {
+        self.sender.send(()).unwrap();
+        RuntimeContainerCancellationToken(self.handle)
+    }
+}
+
+pub struct RuntimeContainerCancellationToken(JoinHandle<Result<()>>);
+
+impl RuntimeContainerCancellationToken {
+    pub fn stop(self) {
+        panic!("Stopping a running container is not currently supported");
     }
 }
