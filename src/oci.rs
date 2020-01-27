@@ -2,6 +2,7 @@ use crate::grpc::{
     image_service_server::ImageService, ListImagesRequest, ListImagesResponse, PullImageRequest,
     PullImageResponse,
 };
+use std::convert::TryFrom;
 use std::ffi::CString;
 use std::path::PathBuf;
 use tonic::{Request, Response, Status};
@@ -28,21 +29,50 @@ impl CriImageService {
         CriImageService { root_dir }
     }
 
-    fn pull_module(&self, module_ref: &str) -> Result<(), failure::Error> {
-        // currently, the library only accepts modules tagged in the following structure:
-        // <registry>/<repository>:<tag>
-        // for example: webassembly.azurecr.io/hello:v1
-        let mut registry_parts = module_ref.split('/');
-        let reg = registry_parts.next().unwrap();
-        let mut repo_parts = registry_parts.next().unwrap().split(':');
-        let repo = repo_parts.next().unwrap();
-        let tag = repo_parts.next().unwrap();
-
-        let pull_path = self.root_dir.join(reg).join(repo).join(tag);
+    fn pull_module(&self, module_ref: ImageRef) -> Result<(), failure::Error> {
+        let pull_path = module_ref.dir_path(&self.root_dir);
 
         std::fs::create_dir_all(&pull_path)?;
-        let target_mod = pull_path.join("module.wasm");
-        pull_wasm(module_ref, target_mod.to_str().unwrap())
+        let target_mod = module_ref.file_path(&self.root_dir);
+        pull_wasm(module_ref.whole, target_mod.to_str().unwrap())
+    }
+}
+
+// currently, the library only accepts modules tagged in the following structure:
+// <registry>/<repository>:<tag>
+// for example: webassembly.azurecr.io/hello:v1
+#[derive(Copy, Clone)]
+pub(crate) struct ImageRef<'a> {
+    pub(crate) whole: &'a str,
+    pub(crate) registry: &'a str,
+    pub(crate) repo: &'a str,
+    pub(crate) tag: &'a str,
+}
+
+impl<'a> ImageRef<'a> {
+    pub(crate) fn dir_path(&self, root_dir: &PathBuf) -> PathBuf {
+        root_dir.join(self.registry).join(self.repo).join(self.tag)
+    }
+
+    pub(crate) fn file_path(&self, root_dir: &PathBuf) -> PathBuf {
+        self.dir_path(root_dir).join("module.wasm")
+    }
+}
+
+impl<'a> TryFrom<&'a String> for ImageRef<'a> {
+    type Error = ();
+    fn try_from(string: &'a String) -> Result<Self, Self::Error> {
+        let mut registry_parts = string.split('/');
+        let registry = registry_parts.next().ok_or(())?;
+        let mut repo_parts = registry_parts.next().ok_or(())?.split(':');
+        let repo = repo_parts.next().ok_or(())?;
+        let tag = repo_parts.next().ok_or(())?;
+        Ok(ImageRef {
+            whole: string,
+            registry,
+            repo,
+            tag,
+        })
     }
 }
 
@@ -58,7 +88,8 @@ impl ImageService for CriImageService {
     async fn pull_image(&self, request: Request<PullImageRequest>) -> CriResult<PullImageResponse> {
         let image_ref = request.into_inner().image.unwrap().image;
 
-        self.pull_module(&image_ref).expect("cannot pull module");
+        self.pull_module(ImageRef::try_from(&image_ref).expect("Image ref is malformed"))
+            .expect("cannot pull module");
         let resp = PullImageResponse { image_ref };
 
         Ok(Response::new(resp))

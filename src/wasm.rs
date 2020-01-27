@@ -58,10 +58,10 @@ impl Runtime for WasiRuntime {
             ctx_builder = ctx_builder.preopened_dir(preopen_dir(key)?, guest_dir);
         }
         let wasi_ctx = ctx_builder.build()?;
-        let wasi_inst = HostRef::new(wasmtime::Instance::from_handle(
+        let wasi_inst = wasmtime::Instance::from_handle(
             &store,
             instantiate_wasi_with_context(global_exports, wasi_ctx)?,
-        ));
+        );
         let module = Module::new(&store, &self.module_data)
             .map_err(|e| format_err!("unable to load module data {}", e))?;
         let module = HostRef::new(module);
@@ -73,7 +73,7 @@ impl Runtime for WasiRuntime {
             .map(|i| {
                 let module_name = i.module().as_str();
                 let field_name = i.name().as_str();
-                if let Some(export) = wasi_inst.borrow().find_export_by_name(field_name) {
+                if let Some(export) = wasi_inst.find_export_by_name(field_name) {
                     Ok(export.clone())
                 } else {
                     failure::bail!(

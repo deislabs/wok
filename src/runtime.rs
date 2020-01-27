@@ -421,7 +421,13 @@ impl RuntimeService for CriRuntimeService {
         match runtime {
             RuntimeHandler::WASCC => unimplemented!(),
             RuntimeHandler::WASI => {
-                let path: &str = unimplemented!();
+                use std::convert::TryFrom;
+                let image_ref = crate::oci::ImageRef::try_from(&container.image_ref).unwrap();
+                let path = image_ref
+                    .file_path(&crate::oci::default_image_dir())
+                    .into_os_string()
+                    .into_string()
+                    .unwrap();
                 let runtime = crate::wasm::WasiRuntime::new(
                     path,
                     unimplemented!(),
