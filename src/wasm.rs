@@ -11,15 +11,6 @@ use wasmtime_wasi::*;
 
 pub mod wascc;
 
-/// EnvVars is a convenience alias around a hash map of String to String
-pub type EnvVars = HashMap<String, String>;
-
-/// DirMapping is a convenience alias for a hash map of local file system paths
-/// to optional path names in the runtime (e.g. /tmp/foo/myfile -> /app/config).
-/// If the optional value is not given, the same path will be allowed in the
-/// runtime
-pub type DirMapping = HashMap<String, Option<String>>;
-
 pub trait Runtime {
     fn run(&self) -> Result<()>;
     fn output(&self) -> Result<(BufReader<File>, BufReader<File>)>;
@@ -27,13 +18,20 @@ pub trait Runtime {
 
 /// WasiRuntime provides a WASI compatible runtime. A runtime should be used for
 /// each "instance" of a process and can be passed to a thread pool for running
-// TODO: Should we have a Trait that this implements along with the WASCC runtime?
 pub struct WasiRuntime {
+    /// binary module data to be run as a wasm module
     module_data: Vec<u8>,
-    env: EnvVars,
+    /// key/value environment variables made available to the wasm process
+    env: HashMap<String, String>,
+    /// the arguments passed as the command-line arguments list
     args: Vec<String>,
-    dirs: DirMapping,
+    /// a hash map of local file system paths to optional path names in the runtime
+    /// (e.g. /tmp/foo/myfile -> /app/config). If the optional value is not given,
+    /// the same path will be allowed in the runtime
+    dirs: HashMap<String, Option<String>>,
+    /// Handle to stdout
     stdout: NamedTempFile,
+    /// handle to stderr
     stderr: NamedTempFile,
 }
 
@@ -116,16 +114,16 @@ impl WasiRuntime {
     ///
     /// * `module_path` - the path to the WebAssembly binary
     /// * `env` - a collection of key/value pairs containing the environment variables
-    /// * `args` - the arguments passed as the command-line arguments list.
+    /// * `args` - the arguments passed as the command-line arguments list
     /// * `dirs` - a map of local file system paths to optional path names in the runtime
     ///     (e.g. /tmp/foo/myfile -> /app/config). If the optional value is not given,
     ///     the same path will be allowed in the runtime
     /// * `log_file_location` - location for storing logs
     pub fn new<M: AsRef<Path>, L: AsRef<Path> + Copy>(
         module_path: M,
-        env: EnvVars,
+        env: HashMap<String, String>,
         args: Vec<String>,
-        dirs: DirMapping,
+        dirs: HashMap<String, Option<String>>,
         log_file_location: L,
     ) -> Result<Self> {
         let module_data = std::fs::read(module_path)?;

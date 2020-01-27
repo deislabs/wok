@@ -431,16 +431,26 @@ impl RuntimeService for CriRuntimeService {
                     .into_os_string()
                     .into_string()
                     .unwrap();
-                // TODO: get env and dirs
+                let env: HashMap<String, String> = container
+                    .config
+                    .envs
+                    .iter()
+                    .cloned()
+                    .map(|pair| (pair.key, pair.value))
+                    .collect();
+
                 let runtime = crate::wasm::WasiRuntime::new(
                     path,
-                    HashMap::new(),
+                    env,
                     container.config.args.clone(),
+                    // TODO: dirs
                     HashMap::new(),
                     container.log_path.as_ref().unwrap_or(&PathBuf::new()),
                 )
                 .unwrap();
-                RuntimeContainer::new(runtime).start();
+
+                // TODO: keep track of cancellation token
+                let _token = RuntimeContainer::new(runtime).start();
             }
         };
         Ok(Response::new(StartContainerResponse {}))
