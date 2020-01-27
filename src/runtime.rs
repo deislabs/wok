@@ -411,23 +411,23 @@ impl RuntimeService for CriRuntimeService {
             .find(|c| c.id == id)
             .ok_or_else(|| Status::not_found("Container not found"))?;
 
-        let sandbox = self
-            .sandboxes
-            .read()
-            .unwrap()
+        let sandboxes = self.sandboxes.read().unwrap();
+        let sandbox = sandboxes
             .get(&container.pod_sandbox_id)
-            .ok_or_else(|| todo!())?;
+            .ok_or_else(|| Status::not_found("Sandbox not found"))?;
 
-        let runtime = RuntimeHandler::from_string(&sandbox.runtime_handler).map_err(|_| todo!())?;
+        let runtime = RuntimeHandler::from_string(&sandbox.runtime_handler)
+            .map_err(|_| Status::invalid_argument("Invalid runtime handler"))?;
         match runtime {
             RuntimeHandler::WASCC => unimplemented!(),
             RuntimeHandler::WASI => {
+                let path: &str = unimplemented!();
                 let runtime = crate::wasm::WasiRuntime::new(
+                    path,
                     unimplemented!(),
+                    container.config.args,
                     unimplemented!(),
-                    unimplemented!(),
-                    unimplemented!(),
-                    unimplemented!(),
+                    &container.log_path.unwrap_or(PathBuf::new()),
                 )
                 .unwrap();
                 RuntimeContainer::new(runtime).start();
@@ -793,7 +793,7 @@ pub struct RuntimeContainer {
 }
 
 impl RuntimeContainer {
-    pub fn new<T: Runtime + Send + Sync + 'static>(rt: T) -> Self {
+    pub fn new<T: Runtime + Send + 'static>(rt: T) -> Self {
         let (sender, receiver) = channel::<()>();
         let handle = tokio::task::spawn_blocking(move || {
             let _ = receiver.recv().unwrap();
