@@ -14,10 +14,10 @@ use crate::grpc::{
     ContainerState, ContainerStatus, ContainerStatusRequest, ContainerStatusResponse,
     CreateContainerRequest, CreateContainerResponse, ImageSpec, ListContainersRequest,
     ListContainersResponse, ListPodSandboxRequest, ListPodSandboxResponse, Mount, PodSandbox,
-    PodSandboxState, PodSandboxStatusRequest, PodSandboxStatusResponse, RemoveContainerRequest,
-    RemoveContainerResponse, RemovePodSandboxRequest, RemovePodSandboxResponse,
-    RunPodSandboxRequest, RunPodSandboxResponse, RuntimeCondition, RuntimeStatus,
-    StartContainerRequest, StartContainerResponse, StatusRequest, StatusResponse,
+    PodSandboxState, PodSandboxStatus, PodSandboxStatusRequest, PodSandboxStatusResponse,
+    RemoveContainerRequest, RemoveContainerResponse, RemovePodSandboxRequest,
+    RemovePodSandboxResponse, RunPodSandboxRequest, RunPodSandboxResponse, RuntimeCondition,
+    RuntimeStatus, StartContainerRequest, StartContainerResponse, StatusRequest, StatusResponse,
     StopContainerRequest, StopContainerResponse, StopPodSandboxRequest, StopPodSandboxResponse,
     VersionRequest, VersionResponse,
 };
@@ -79,6 +79,22 @@ impl From<UserContainer> for Container {
             labels: item.config.labels,
             state: item.state,
             metadata: item.config.metadata,
+        }
+    }
+}
+
+impl From<PodSandbox> for PodSandboxStatus {
+    fn from(item: PodSandbox) -> Self {
+        PodSandboxStatus {
+            id: item.id,
+            metadata: item.metadata,
+            created_at: item.created_at,
+            annotations: item.annotations,
+            labels: item.labels,
+            state: item.state,
+            runtime_handler: item.runtime_handler,
+            network: None, // to be populated by the caller
+            linux: None,   // unused by wok
         }
     }
 }
@@ -263,7 +279,10 @@ impl RuntimeService for CriRuntimeService {
 
         // Stop all containers inside the sandbox. This forcibly terminates all containers with no grace period.
         let container_store = self.containers.read().unwrap();
-        let containers: Vec<&UserContainer> = container_store.iter().filter(|x| x.pod_sandbox_id == id).collect();
+        let containers: Vec<&UserContainer> = container_store
+            .iter()
+            .filter(|x| x.pod_sandbox_id == id)
+            .collect();
         for container in containers {
             self.stop_container(Request::new(StopContainerRequest {
                 container_id: container.id.clone(),
@@ -321,11 +340,32 @@ impl RuntimeService for CriRuntimeService {
 
     async fn pod_sandbox_status(
         &self,
-        _req: Request<PodSandboxStatusRequest>,
+        req: Request<PodSandboxStatusRequest>,
     ) -> CriResult<PodSandboxStatusResponse> {
+        let request = req.into_inner();
+
+        let sandboxes = self.sandboxes.read().unwrap();
+        let sandbox = match sandboxes.get(&request.pod_sandbox_id) {
+            Some(s) => s,
+            None => {
+                return Err(Status::not_found(format!(
+                    "Sandbox {} does not exist",
+                    request.pod_sandbox_id
+                )))
+            }
+        };
+
+        let status = PodSandboxStatus::from(sandbox.clone());
+
+        // TODO(bacongobbler): report back status on the network and linux-specific sandbox status here (when implemented)
+
+        // TODO: generate any verbose information we want to report if requested.
+        //
+        // Right now, we don't have any extra information to provide to the user here, so we'll just return what we know.
+
         Ok(Response::new(PodSandboxStatusResponse {
             info: HashMap::new(),
-            status: None,
+            status: Some(status),
         }))
     }
 
@@ -549,9 +589,32 @@ mod test {
     #[tokio::test]
     async fn test_pod_sandbox_status() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
-        let req = Request::new(PodSandboxStatusRequest::default());
+        let mut sandboxes = svc.sandboxes.write().unwrap();
+        let sandbox = PodSandbox {
+            id: "1".to_owned(),
+            metadata: None,
+            state: PodSandboxState::SandboxNotready as i32,
+            created_at: Utc::now().timestamp_nanos(),
+            labels: HashMap::new(),
+            annotations: HashMap::new(),
+            runtime_handler: RuntimeHandler::WASI.to_string(),
+        };
+        sandboxes.insert(sandbox.id.clone(), sandbox);
+        drop(sandboxes);
+        let req = Request::new(PodSandboxStatusRequest {
+            pod_sandbox_id: "1".to_owned(),
+            verbose: true,
+        });
         let res = svc.pod_sandbox_status(req).await;
-        assert_eq!(None, res.expect("status result").get_ref().status);
+        assert_eq!(
+            "1",
+            res.expect("status result")
+                .get_ref()
+                .status
+                .as_ref()
+                .expect("status result")
+                .id
+        );
     }
 
     #[tokio::test]
@@ -636,10 +699,10 @@ mod test {
             },
         );
         drop(sandboxes);
-        let req = Request::new(CreateContainerRequest{
+        let req = Request::new(CreateContainerRequest {
             pod_sandbox_id: "test".to_owned(),
             config: None,
-            sandbox_config: None
+            sandbox_config: None,
         });
         let res = svc.create_container(req).await;
         // We can't have a deterministic container id, so just check it is a valid uuid
