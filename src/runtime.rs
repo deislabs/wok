@@ -210,8 +210,31 @@ impl RuntimeService for CriRuntimeService {
 
     async fn stop_pod_sandbox(
         &self,
-        _req: Request<StopPodSandboxRequest>,
+        req: Request<StopPodSandboxRequest>,
     ) -> CriResult<StopPodSandboxResponse> {
+        let id = req.into_inner().pod_sandbox_id;
+
+        let mut sandboxes = self.sandboxes.write().unwrap();
+        let mut sandbox = match sandboxes.get_mut(&id) {
+            Some(s) => s,
+            None => return Err(Status::not_found(format!("Sandbox {} does not exist", id))),
+        };
+
+        // Stop all containers inside the sandbox. This forcibly terminates all containers with no grace period.
+        let container_store = self.containers.read().unwrap();
+        let containers: Vec<&UserContainer> = container_store.iter().filter(|x| x.pod_sandbox_id == id).collect();
+        for container in containers {
+            self.stop_container(Request::new(StopContainerRequest {
+                container_id: container.id.clone(),
+                timeout: 0,
+            }));
+        }
+
+        // mark the pod sandbox as not ready, preventing future container creation.
+        sandbox.state = PodSandboxState::SandboxNotready as i32;
+
+        // TODO(bacongobbler): when networking is implemented, here is where we should tear down the network.
+
         Ok(Response::new(StopPodSandboxResponse {}))
     }
 
@@ -223,7 +246,7 @@ impl RuntimeService for CriRuntimeService {
     ) -> CriResult<RemovePodSandboxResponse> {
         let id = &req.into_inner().pod_sandbox_id;
 
-        let sandboxes = self.sandboxes.read().unwrap();
+        let mut sandboxes = self.sandboxes.write().unwrap();
         let sandbox = match sandboxes.get(id) {
             Some(s) => s,
             None => return Err(Status::not_found(format!("Sandbox {} does not exist", id))),
@@ -236,7 +259,6 @@ impl RuntimeService for CriRuntimeService {
                 id
             )));
         }
-        drop(sandboxes);
 
         // TODO(bacongobbler): when networking is implemented, here is where we should return an error if the sandbox's
         // network namespace is not closed yet.
@@ -251,7 +273,7 @@ impl RuntimeService for CriRuntimeService {
         }
 
         // remove the sandbox.
-        self.sandboxes.write().unwrap().remove(id);
+        sandboxes.remove(id);
 
         Ok(Response::new(RemovePodSandboxResponse {}))
     }
@@ -271,8 +293,8 @@ impl RuntimeService for CriRuntimeService {
         req: Request<CreateContainerRequest>,
     ) -> CriResult<CreateContainerResponse> {
         let container_req = req.into_inner();
-        let container_config = container_req.config.unwrap();
-        let sandbox_config = container_req.sandbox_config.unwrap();
+        let container_config = container_req.config.unwrap_or_default();
+        let sandbox_config = container_req.sandbox_config.unwrap_or_default();
 
         // generate a unique ID for the container
         //
@@ -450,21 +472,21 @@ mod test {
         let mut container = UserContainer::default();
         container.pod_sandbox_id = "1".to_owned();
         svc.containers.write().unwrap().push(container);
-        {
-            let mut sandboxes = svc.sandboxes.write().unwrap();
-            sandboxes.insert(
-                "1".to_owned(),
-                PodSandbox {
-                    id: "1".to_owned(),
-                    metadata: None,
-                    state: PodSandboxState::SandboxNotready as i32,
-                    created_at: Utc::now().timestamp_nanos(),
-                    labels: HashMap::new(),
-                    annotations: HashMap::new(),
-                    runtime_handler: RuntimeHandler::WASI.to_string(),
-                },
-            );
-        }
+
+        let mut sandboxes = svc.sandboxes.write().unwrap();
+        sandboxes.insert(
+            "1".to_owned(),
+            PodSandbox {
+                id: "1".to_owned(),
+                metadata: None,
+                state: PodSandboxState::SandboxNotready as i32,
+                created_at: Utc::now().timestamp_nanos(),
+                labels: HashMap::new(),
+                annotations: HashMap::new(),
+                runtime_handler: RuntimeHandler::WASI.to_string(),
+            },
+        );
+        drop(sandboxes);
         let req = Request::new(RemovePodSandboxRequest {
             pod_sandbox_id: "1".to_owned(),
         });
@@ -479,6 +501,20 @@ mod test {
     #[tokio::test]
     async fn test_stop_pod_sandbox() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
+        let mut sandboxes = svc.sandboxes.write().unwrap();
+        sandboxes.insert(
+            "test".to_owned(),
+            PodSandbox {
+                id: "test".to_owned(),
+                metadata: None,
+                state: PodSandboxState::SandboxReady as i32,
+                created_at: Utc::now().timestamp_nanos(),
+                labels: HashMap::new(),
+                annotations: HashMap::new(),
+                runtime_handler: RuntimeHandler::WASI.to_string(),
+            },
+        );
+        drop(sandboxes);
         let req = Request::new(StopPodSandboxRequest {
             pod_sandbox_id: "test".to_owned(),
         });
@@ -486,15 +522,37 @@ mod test {
 
         // Expect the stopped ID to be the same as the requested ID.
         res.expect("empty stop result");
+
+        // test what happens when the requested pod sandbox doesn't exist
+        let req = Request::new(StopPodSandboxRequest {
+            pod_sandbox_id: "doesnotexist".to_owned(),
+        });
+        let res = svc.stop_pod_sandbox(req).await;
+        res.expect_err("pod sandbox does not exist");
     }
 
     #[tokio::test]
     async fn test_create_container() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
-        let mut container_req = CreateContainerRequest::default();
-        container_req.config = Some(ContainerConfig::default());
-        container_req.sandbox_config = Some(PodSandboxConfig::default());
-        let req = Request::new(container_req);
+        let mut sandboxes = svc.sandboxes.write().unwrap();
+        sandboxes.insert(
+            "test".to_owned(),
+            PodSandbox {
+                id: "test".to_owned(),
+                metadata: None,
+                state: PodSandboxState::SandboxReady as i32,
+                created_at: Utc::now().timestamp_nanos(),
+                labels: HashMap::new(),
+                annotations: HashMap::new(),
+                runtime_handler: RuntimeHandler::WASI.to_string(),
+            },
+        );
+        drop(sandboxes);
+        let req = Request::new(CreateContainerRequest{
+            pod_sandbox_id: "test".to_owned(),
+            config: None,
+            sandbox_config: None
+        });
         let res = svc.create_container(req).await;
         // We can't have a deterministic container id, so just check it is a valid uuid
         uuid::Uuid::parse_str(
