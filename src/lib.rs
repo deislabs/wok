@@ -8,8 +8,8 @@ pub mod grpc {
 
 pub mod oci;
 pub mod runtime;
-pub mod wasm;
 mod util;
+pub mod wasm;
 
 pub use grpc::image_service_server::ImageServiceServer;
 pub use grpc::runtime_service_server::RuntimeServiceServer;

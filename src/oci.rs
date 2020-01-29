@@ -24,8 +24,7 @@ pub struct CriImageService {
 
 impl CriImageService {
     pub fn new(root_dir: PathBuf) -> Self {
-        util::ensure_root_dir(&root_dir)
-            .expect("cannot create root directory for image service");
+        util::ensure_root_dir(&root_dir).expect("cannot create root directory for image service");
         CriImageService { root_dir }
     }
 
