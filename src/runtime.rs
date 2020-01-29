@@ -165,8 +165,7 @@ impl RuntimeService for CriRuntimeService {
         // to set up networking here
 
         // Create the logs directory for this pod
-        std::fs::create_dir_all(&sandbox_conf.log_directory)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        tokio::fs::create_dir_all(&sandbox_conf.log_directory).await?;
         // Basically, everything above here is all we need to set up a sandbox.
         // All of the security context stuff pretty much doesn't matter for
         // WASM, but we can revisit this as things keep evolving
@@ -407,76 +406,11 @@ impl RuntimeService for CriRuntimeService {
 mod test {
     use super::*;
     use crate::grpc::*;
-    use futures::executor::block_on;
     use tempfile::tempdir;
     use tonic::Request;
 
-    #[test]
-    fn test_version() {
-        block_on(_test_version())
-    }
-
-    #[test]
-    fn test_run_pod_sandbox() {
-        block_on(_test_run_pod_sandbox())
-    }
-
-    #[test]
-    fn test_create_and_list() {
-        block_on(_test_create_and_list())
-    }
-
-    #[test]
-    fn test_list_pod_sandbox() {
-        block_on(_test_list_pod_sandbox())
-    }
-
-    #[test]
-    fn test_pod_sandbox_status() {
-        block_on(_test_pod_sandbox_status())
-    }
-
-    #[test]
-    fn test_remove_pod_sandbox() {
-        block_on(_test_remove_pod_sandbox())
-    }
-
-    #[test]
-    fn test_stop_pod_sandbox() {
-        block_on(_test_stop_pod_sandbox())
-    }
-
-    #[test]
-    fn test_create_container() {
-        block_on(_test_create_container())
-    }
-
-    #[test]
-    fn test_start_container() {
-        block_on(_test_start_container())
-    }
-
-    #[test]
-    fn test_stop_container() {
-        block_on(_test_stop_container())
-    }
-
-    #[test]
-    fn test_remove_container() {
-        block_on(_test_remove_container())
-    }
-
-    #[test]
-    fn test_list_containers() {
-        block_on(_test_list_containers())
-    }
-
-    #[test]
-    fn test_container_status() {
-        block_on(_test_container_status())
-    }
-
-    async fn _test_version() {
+    #[tokio::test]
+    async fn test_version() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let res = svc.version(Request::new(VersionRequest::default())).await;
         assert_eq!(
@@ -494,21 +428,24 @@ mod test {
         );
     }
 
-    async fn _test_list_pod_sandbox() {
+    #[tokio::test]
+    async fn test_list_pod_sandbox() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(ListPodSandboxRequest::default());
         let res = svc.list_pod_sandbox(req).await;
         assert_eq!(0, res.expect("successful pod list").get_ref().items.len());
     }
 
-    async fn _test_pod_sandbox_status() {
+    #[tokio::test]
+    async fn test_pod_sandbox_status() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(PodSandboxStatusRequest::default());
         let res = svc.pod_sandbox_status(req).await;
         assert_eq!(None, res.expect("status result").get_ref().status);
     }
 
-    async fn _test_remove_pod_sandbox() {
+    #[tokio::test]
+    async fn test_remove_pod_sandbox() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let mut container = UserContainer::default();
         container.pod_sandbox_id = "1".to_owned();
@@ -539,7 +476,8 @@ mod test {
         assert_eq!(0, svc.sandboxes.read().unwrap().values().cloned().len());
     }
 
-    async fn _test_stop_pod_sandbox() {
+    #[tokio::test]
+    async fn test_stop_pod_sandbox() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(StopPodSandboxRequest {
             pod_sandbox_id: "test".to_owned(),
@@ -550,7 +488,8 @@ mod test {
         res.expect("empty stop result");
     }
 
-    async fn _test_create_container() {
+    #[tokio::test]
+    async fn test_create_container() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let mut container_req = CreateContainerRequest::default();
         container_req.config = Some(ContainerConfig::default());
@@ -567,7 +506,8 @@ mod test {
         assert_eq!(1, svc.containers.read().unwrap().len());
     }
 
-    async fn _test_start_container() {
+    #[tokio::test]
+    async fn test_start_container() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(StartContainerRequest::default());
         let res = svc.start_container(req).await;
@@ -575,7 +515,8 @@ mod test {
         res.expect("start container result");
     }
 
-    async fn _test_stop_container() {
+    #[tokio::test]
+    async fn test_stop_container() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(StopContainerRequest::default());
         let res = svc.stop_container(req).await;
@@ -583,7 +524,8 @@ mod test {
         res.expect("stop container result");
     }
 
-    async fn _test_remove_container() {
+    #[tokio::test]
+    async fn test_remove_container() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(RemoveContainerRequest::default());
         let res = svc.remove_container(req).await;
@@ -591,7 +533,8 @@ mod test {
         res.expect("remove container result");
     }
 
-    async fn _test_list_containers() {
+    #[tokio::test]
+    async fn test_list_containers() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(ListContainersRequest::default());
         let res = svc.list_containers(req).await;
@@ -604,7 +547,8 @@ mod test {
         );
     }
 
-    async fn _test_container_status() {
+    #[tokio::test]
+    async fn test_container_status() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let req = Request::new(ContainerStatusRequest::default());
         let res = svc.container_status(req).await;
@@ -618,7 +562,8 @@ mod test {
         );
     }
 
-    async fn _test_run_pod_sandbox() {
+    #[tokio::test]
+    async fn test_run_pod_sandbox() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let mut sandbox_req = RunPodSandboxRequest::default();
         sandbox_req.runtime_handler = RuntimeHandler::WASI.to_string();
@@ -638,7 +583,8 @@ mod test {
         assert_eq!(true, log_dir_name.exists());
     }
 
-    async fn _test_create_and_list() {
+    #[tokio::test]
+    async fn test_create_and_list() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
         let mut sandbox_req = RunPodSandboxRequest::default();
         sandbox_req.runtime_handler = RuntimeHandler::WASI.to_string();
