@@ -16,7 +16,8 @@ use crate::grpc::{
     ListContainersResponse, ListPodSandboxRequest, ListPodSandboxResponse, Mount, PodSandbox,
     PodSandboxState, PodSandboxStatusRequest, PodSandboxStatusResponse, RemoveContainerRequest,
     RemoveContainerResponse, RemovePodSandboxRequest, RemovePodSandboxResponse,
-    RunPodSandboxRequest, RunPodSandboxResponse, StartContainerRequest, StartContainerResponse,
+    RunPodSandboxRequest, RunPodSandboxResponse, RuntimeCondition, RuntimeStatus,
+    StartContainerRequest, StartContainerResponse, StatusRequest, StatusResponse,
     StopContainerRequest, StopContainerResponse, StopPodSandboxRequest, StopPodSandboxResponse,
     VersionRequest, VersionResponse,
 };
@@ -146,6 +147,46 @@ impl RuntimeService for CriRuntimeService {
             // NOTE: The Kubernetes API distinctly says that this MUST be a SemVer...
             // but actually require this format, which is not SemVer at all.
             runtime_api_version: RUNTIME_API_VERSION.to_string(),
+        }))
+    }
+
+    async fn status(&self, req: Request<StatusRequest>) -> CriResult<StatusResponse> {
+        let mut extra_info = HashMap::new();
+        if req.into_inner().verbose {
+            extra_info.insert(
+                "running_sandboxes".to_owned(),
+                self.sandboxes.read().unwrap().len().to_string(),
+            );
+            extra_info.insert(
+                "running_containers".to_owned(),
+                self.containers.read().unwrap().len().to_string(),
+            );
+        }
+
+        Ok(Response::new(StatusResponse {
+            status: Some(RuntimeStatus {
+                conditions: vec![
+                    // There isn't anything else to change on these right now,
+                    // so keep them hard coded. If we start needing to update
+                    // these (such as with networking) or add our own arbitrary
+                    // conditions, we can move them into the struct
+                    RuntimeCondition {
+                        r#type: "RuntimeReady".to_owned(),
+                        status: true,
+                        // NOTE: We should make these reasons an enum once we
+                        // actually define more of them
+                        reason: "RuntimeStarted".to_owned(),
+                        message: "Runtime has been started and is ready to run modules".to_owned(),
+                    },
+                    RuntimeCondition {
+                        r#type: "NetworkReady".to_owned(),
+                        status: false, // False until we figure out networking support
+                        reason: "Unimplemented".to_owned(),
+                        message: "Networking is currently unimplemented".to_owned(),
+                    },
+                ],
+            }),
+            info: extra_info,
         }))
     }
 
@@ -426,6 +467,53 @@ mod test {
                 .runtime_api_version,
             RUNTIME_API_VERSION
         );
+    }
+
+    #[tokio::test]
+    async fn test_status() {
+        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let res = svc
+            .status(Request::new(StatusRequest::default()))
+            .await
+            .expect("successful status request");
+        assert_eq!(
+            res.get_ref().status.as_ref().unwrap().conditions,
+            vec![
+                // There isn't anything else to change on these right now,
+                // so keep them hard coded. If we start needing to update
+                // these (such as with networking) or add our own arbitrary
+                // conditions, we can move them into the struct
+                RuntimeCondition {
+                    r#type: "RuntimeReady".to_owned(),
+                    status: true,
+                    // NOTE: We should make these reasons an enum once we
+                    // actually define more of them
+                    reason: "RuntimeStarted".to_owned(),
+                    message: "Runtime has been started and is ready to run modules".to_owned(),
+                },
+                RuntimeCondition {
+                    r#type: "NetworkReady".to_owned(),
+                    status: false, // False until we figure out networking support
+                    reason: "Unimplemented".to_owned(),
+                    message: "Networking is currently unimplemented".to_owned(),
+                },
+            ]
+        );
+
+        // Make sure info is empty because it wasn't verbose
+        assert!(res.get_ref().info.is_empty());
+
+        // now double check that info gets data if verbose is requested
+        let mut req = StatusRequest::default();
+        req.verbose = true;
+        let res = svc
+            .status(Request::new(req))
+            .await
+            .expect("successful status request");
+        let info = &res.get_ref().info;
+        assert!(!info.is_empty());
+        assert!(info.contains_key("running_sandboxes"));
+        assert!(info.contains_key("running_containers"));
     }
 
     #[tokio::test]
