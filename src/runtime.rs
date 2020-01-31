@@ -355,9 +355,9 @@ impl RuntimeService for CriRuntimeService {
             state: ContainerState::ContainerCreated as i32,
             created_at: Utc::now().timestamp_nanos(),
             config: container_config.to_owned(),
-            log_path: None,           // to be set further down
-            image_ref: "".to_owned(), // FIXME(bacongobbler): resolve this to the local image reference based on config.image.name
-            volumes: vec![],          // to be added further down
+            log_path: None, // to be set further down
+            image_ref: container_config.image.as_ref().unwrap().image.clone(), // FIXME(rylev): understand what it means for the image to be None
+            volumes: vec![], // to be added further down
         };
 
         // create container root directory.
@@ -405,19 +405,28 @@ impl RuntimeService for CriRuntimeService {
         req: Request<StartContainerRequest>,
     ) -> CriResult<StartContainerResponse> {
         let id = req.into_inner().container_id;
-        let containers = self.containers.read().unwrap();
-        let container = containers
-            .iter()
-            .find(|c| c.id == id)
-            .ok_or_else(|| Status::not_found("Container not found"))?;
 
-        let sandboxes = self.sandboxes.read().unwrap();
-        let sandbox = sandboxes
-            .get(&container.pod_sandbox_id)
-            .ok_or_else(|| Status::not_found("Sandbox not found"))?;
+        // Create specific scope for the container read lock
+        let (runtime, container) = {
+            let containers = self.containers.read().unwrap();
+            let container = containers
+                .iter()
+                .find(|c| c.id == id)
+                .ok_or_else(|| Status::not_found("Container not found"))?;
+            let sandboxes = self.sandboxes.read().unwrap();
+            let sandbox = sandboxes
+                .get(&container.pod_sandbox_id)
+                .ok_or_else(|| Status::not_found("Sandbox not found"))?;
 
-        let runtime = RuntimeHandler::from_string(&sandbox.runtime_handler)
-            .map_err(|_| Status::invalid_argument("Invalid runtime handler"))?;
+            let runtime = RuntimeHandler::from_string(&sandbox.runtime_handler)
+                .map_err(|_| Status::invalid_argument("Invalid runtime handler"))?;
+
+            (runtime, container.clone())
+        };
+        // TODO: handle unset log path
+        let log_path = container.log_path.as_ref().unwrap();
+        tokio::fs::create_dir_all(log_path).await?;
+
         match runtime {
             RuntimeHandler::WASCC => todo!("Handle wasCC"),
             RuntimeHandler::WASI => {
@@ -425,9 +434,8 @@ impl RuntimeService for CriRuntimeService {
 
                 // TODO: handle error
                 let image_ref = crate::oci::ImageRef::try_from(&container.image_ref).unwrap();
-                // TODO: handle if not using default image dir
-                let path = image_ref
-                    .file_path(&crate::oci::default_image_dir())
+                let module_path = image_ref
+                    .file_path(&self.root_dir)
                     .into_os_string()
                     .into_string()
                     .unwrap();
@@ -440,12 +448,12 @@ impl RuntimeService for CriRuntimeService {
                     .collect();
 
                 let runtime = crate::wasm::WasiRuntime::new(
-                    path,
+                    module_path,
                     env,
                     container.config.args.clone(),
                     // TODO: dirs
                     HashMap::new(),
-                    container.log_path.as_ref().unwrap_or(&PathBuf::new()),
+                    &log_path,
                 )
                 .unwrap();
 
