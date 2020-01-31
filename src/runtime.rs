@@ -10,8 +10,9 @@ use crate::util;
 
 // RuntimeService is converted to a package runtime_service_server
 use crate::grpc::{
-    runtime_service_server::RuntimeService, Container, ContainerConfig, ContainerMetadata,
-    ContainerState, ContainerStatus, ContainerStatusRequest, ContainerStatusResponse,
+    runtime_service_server::RuntimeService, Container, ContainerAttributes, ContainerConfig,
+    ContainerMetadata, ContainerState, ContainerStats, ContainerStatsRequest,
+    ContainerStatsResponse, ContainerStatus, ContainerStatusRequest, ContainerStatusResponse,
     CreateContainerRequest, CreateContainerResponse, ImageSpec, ListContainersRequest,
     ListContainersResponse, ListPodSandboxRequest, ListPodSandboxResponse, Mount, PodSandbox,
     PodSandboxState, PodSandboxStatus, PodSandboxStatusRequest, PodSandboxStatusResponse,
@@ -79,6 +80,27 @@ impl From<UserContainer> for Container {
             labels: item.config.labels,
             state: item.state,
             metadata: item.config.metadata,
+        }
+    }
+}
+
+impl From<UserContainer> for ContainerStats {
+    fn from(item: UserContainer) -> Self {
+        ContainerStats {
+            attributes: Some(ContainerAttributes {
+                id: item.id,
+                metadata: item.config.metadata,
+                labels: item.config.labels,
+                annotations: item.config.annotations,
+            }),
+            // TODO(taylor): Fetch this and memory usage from the running
+            // thread? If so, we can't use the From trait because we'd need to
+            // handle errors from trying to get the data
+            cpu: None,
+            memory: None,
+            // We don't have an attached filesystem like containers do, so this
+            // shouldn't matter.
+            writable_layer: None,
         }
     }
 }
@@ -507,6 +529,21 @@ impl RuntimeService for CriRuntimeService {
             info: HashMap::new(),
         }))
     }
+
+    async fn container_stats(
+        &self,
+        req: Request<ContainerStatsRequest>,
+    ) -> CriResult<ContainerStatsResponse> {
+        let id = req.into_inner().container_id;
+        let containers = self.containers.read().unwrap();
+        let container = containers
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| Status::not_found("Container not found"))?;
+        Ok(Response::new(ContainerStatsResponse {
+            stats: Some(container.clone().into()),
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -798,6 +835,59 @@ mod test {
                 .status
                 .unwrap()
                 .reason
+        );
+    }
+
+    #[tokio::test]
+    async fn test_container_stats() {
+        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let mut containers = svc.containers.write().unwrap();
+        let mut labels = HashMap::new();
+        labels.insert("test1".to_owned(), "testing".to_owned());
+        containers.push(UserContainer {
+            id: "test".to_owned(),
+            pod_sandbox_id: "test".to_owned(),
+            image_ref: "doesntmatter".to_owned(),
+            created_at: Utc::now().timestamp_nanos(),
+            state: ContainerState::ContainerRunning as i32,
+            config: ContainerConfig {
+                metadata: Some(ContainerMetadata {
+                    attempt: 1,
+                    name: "test".to_owned(),
+                }),
+                labels: labels.clone(),
+                ..Default::default()
+            },
+            log_path: None,
+            volumes: Vec::default(),
+        });
+        drop(containers);
+        let req = Request::new(ContainerStatsRequest {
+            container_id: "test".to_owned(),
+        });
+        let res = svc.container_stats(req).await;
+        // We expect an empty response object
+        let stats = res
+            .expect("remove container result")
+            .into_inner()
+            .stats
+            .unwrap();
+        assert_eq!(
+            stats,
+            ContainerStats {
+                attributes: Some(ContainerAttributes {
+                    id: "test".to_owned(),
+                    metadata: Some(ContainerMetadata {
+                        attempt: 1,
+                        name: "test".to_owned(),
+                    }),
+                    labels,
+                    annotations: HashMap::new(),
+                }),
+                cpu: None,
+                memory: None,
+                writable_layer: None,
+            }
         );
     }
 
