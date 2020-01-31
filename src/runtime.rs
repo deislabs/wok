@@ -93,6 +93,7 @@ pub struct CriRuntimeService {
     // NOTE: we could replace this with evmap or crossbeam
     sandboxes: Arc<RwLock<BTreeMap<String, PodSandbox>>>,
     containers: Arc<RwLock<Vec<UserContainer>>>,
+    running_containers: Arc<RwLock<HashMap<String, RuntimeContainerCancellationToken>>>,
     root_dir: PathBuf,
 }
 
@@ -102,6 +103,7 @@ impl CriRuntimeService {
         CriRuntimeService {
             sandboxes: Arc::new(RwLock::new(BTreeMap::default())),
             containers: Arc::new(RwLock::new(vec![])),
+            running_containers: Arc::new(RwLock::new(HashMap::new())),
             root_dir: dir,
         }
     }
@@ -267,7 +269,10 @@ impl RuntimeService for CriRuntimeService {
 
         // Stop all containers inside the sandbox. This forcibly terminates all containers with no grace period.
         let container_store = self.containers.read().unwrap();
-        let containers: Vec<&UserContainer> = container_store.iter().filter(|x| x.pod_sandbox_id == id).collect();
+        let containers: Vec<&UserContainer> = container_store
+            .iter()
+            .filter(|x| x.pod_sandbox_id == id)
+            .collect();
         for container in containers {
             self.stop_container(Request::new(StopContainerRequest {
                 container_id: container.id.clone(),
@@ -364,6 +369,7 @@ impl RuntimeService for CriRuntimeService {
         let container_root_dir = self.root_dir.join("containers").join(&id);
         std::fs::create_dir_all(&container_root_dir)?;
 
+        println!("Here {:?}", container_root_dir);
         // generate volume mounts.
         for mount in container_config.mounts {
             let volume_id = Uuid::new_v4().to_string();
@@ -424,7 +430,7 @@ impl RuntimeService for CriRuntimeService {
             (runtime, container.clone())
         };
         // TODO: handle unset log path
-        let log_path = container.log_path.as_ref().unwrap();
+        let log_path = container.log_path.as_ref().expect("No log set");
         tokio::fs::create_dir_all(log_path).await?;
 
         match runtime {
@@ -433,7 +439,8 @@ impl RuntimeService for CriRuntimeService {
                 use std::convert::TryFrom;
 
                 // TODO: handle error
-                let image_ref = crate::oci::ImageRef::try_from(&container.image_ref).unwrap();
+                let image_ref = crate::oci::ImageRef::try_from(&container.image_ref)
+                    .expect("Failed to parse image_ref");
                 let module_path = image_ref
                     .file_path(&self.root_dir)
                     .into_os_string()
@@ -447,6 +454,8 @@ impl RuntimeService for CriRuntimeService {
                     .map(|pair| (pair.key, pair.value))
                     .collect();
 
+                println!("Reading {:?}", module_path);
+
                 let runtime = crate::wasm::WasiRuntime::new(
                     module_path,
                     env,
@@ -455,10 +464,11 @@ impl RuntimeService for CriRuntimeService {
                     HashMap::new(),
                     &log_path,
                 )
-                .unwrap();
+                .expect("Creating runtime failed");
 
-                // TODO: keep track of cancellation token
-                let _token = RuntimeContainer::new(runtime).start();
+                let token = RuntimeContainer::new(runtime).start();
+                let mut running_containers = self.running_containers.write().unwrap();
+                running_containers.insert(container.id, token);
             }
         };
         Ok(Response::new(StartContainerResponse {}))
@@ -697,11 +707,12 @@ mod test {
             },
         );
         drop(sandboxes);
-        let req = Request::new(CreateContainerRequest{
+        let req = Request::new(CreateContainerRequest {
             pod_sandbox_id: "test".to_owned(),
             config: None,
-            sandbox_config: None
+            sandbox_config: None,
         });
+
         let res = svc.create_container(req).await;
         // We can't have a deterministic container id, so just check it is a valid uuid
         uuid::Uuid::parse_str(
@@ -715,8 +726,56 @@ mod test {
 
     #[tokio::test]
     async fn test_start_container() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
-        let req = Request::new(StartContainerRequest::default());
+        // Put every file in a temp dir so it's automatically cleaned up
+        let dir = tempdir().expect("Couldn't create temp directory");
+        let svc = CriRuntimeService::new(dir.path().to_owned());
+
+        let image_ref = crate::oci::ImageRef {
+            whole: "foo/bar:baz",
+            registry: "foo",
+            repo: "bar",
+            tag: "baz",
+        };
+
+        // create temp directories
+        let log_dir_name = dir.path().join("testdir");
+        let image_file = image_ref.file_path(dir.path());
+        // log directory
+        tokio::fs::create_dir_all(&log_dir_name)
+            .await
+            .expect("Could't create log directory");
+        // wasm file directory
+        tokio::fs::create_dir_all(image_file.parent().unwrap())
+            .await
+            .expect("Couldn't create wasm file director");
+        // read and write wasm
+        let wasm = tokio::fs::read("examples/printer.wasm")
+            .await
+            .expect("Couldn't read wasm");
+        tokio::fs::write(image_file, wasm)
+            .await
+            .expect("couldn't write wasm");
+
+        // create sandbox and container
+        let sandbox = PodSandbox::default();
+        let mut container = UserContainer::default();
+
+        let container_id = {
+            // write container
+            let mut containers = svc.containers.write().unwrap();
+            container.pod_sandbox_id = sandbox.id.clone();
+            container.log_path = Some(log_dir_name);
+            container.image_ref = image_ref.whole.to_owned();
+            let container_id = container.id.clone();
+
+            containers.push(container);
+
+            // write sandbox
+            let mut sandboxes = svc.sandboxes.write().unwrap();
+            sandboxes.insert(sandbox.id.clone(), sandbox);
+            container_id
+        };
+        let req = Request::new(StartContainerRequest { container_id });
         let res = svc.start_container(req).await;
         // We expect an empty response object
         res.expect("start container result");
@@ -841,6 +900,7 @@ impl RuntimeContainer {
     }
 }
 
+#[derive(Debug)]
 pub struct RuntimeContainerCancellationToken(JoinHandle<Result<()>>);
 
 impl RuntimeContainerCancellationToken {

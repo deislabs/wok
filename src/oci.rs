@@ -4,7 +4,7 @@ use crate::grpc::{
 };
 use std::convert::TryFrom;
 use std::ffi::CString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tonic::{Request, Response, Status};
 
 use crate::runtime::CriResult;
@@ -50,11 +50,11 @@ pub(crate) struct ImageRef<'a> {
 }
 
 impl<'a> ImageRef<'a> {
-    pub(crate) fn dir_path(&self, root_dir: &PathBuf) -> PathBuf {
+    pub(crate) fn dir_path(&self, root_dir: &Path) -> PathBuf {
         root_dir.join(self.registry).join(self.repo).join(self.tag)
     }
 
-    pub(crate) fn file_path(&self, root_dir: &PathBuf) -> PathBuf {
+    pub(crate) fn file_path(&self, root_dir: &Path) -> PathBuf {
         self.dir_path(root_dir).join("module.wasm")
     }
 }
