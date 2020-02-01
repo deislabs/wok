@@ -47,6 +47,7 @@ struct Opts {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     let opts: Opts = Opts::parse();
     let runtime = CriRuntimeService::new(opts.dir.clone());
     let image_service = CriImageService::new(opts.dir.clone());
