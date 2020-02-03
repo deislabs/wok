@@ -10,14 +10,16 @@ use crate::util;
 
 // RuntimeService is converted to a package runtime_service_server
 use crate::grpc::{
-    runtime_service_server::RuntimeService, Container, ContainerConfig, ContainerMetadata,
-    ContainerState, ContainerStatus, ContainerStatusRequest, ContainerStatusResponse,
-    CreateContainerRequest, CreateContainerResponse, ImageSpec, ListContainersRequest,
-    ListContainersResponse, ListPodSandboxRequest, ListPodSandboxResponse, Mount, PodSandbox,
-    PodSandboxState, PodSandboxStatus, PodSandboxStatusRequest, PodSandboxStatusResponse,
-    RemoveContainerRequest, RemoveContainerResponse, RemovePodSandboxRequest,
-    RemovePodSandboxResponse, RunPodSandboxRequest, RunPodSandboxResponse, RuntimeCondition,
-    RuntimeStatus, StartContainerRequest, StartContainerResponse, StatusRequest, StatusResponse,
+    runtime_service_server::RuntimeService, Container, ContainerAttributes, ContainerConfig,
+    ContainerMetadata, ContainerState, ContainerStats, ContainerStatsRequest,
+    ContainerStatsResponse, ContainerStatus, ContainerStatusRequest, ContainerStatusResponse,
+    CreateContainerRequest, CreateContainerResponse, ImageSpec, ListContainerStatsRequest,
+    ListContainerStatsResponse, ListContainersRequest, ListContainersResponse,
+    ListPodSandboxRequest, ListPodSandboxResponse, Mount, PodSandbox, PodSandboxState,
+    PodSandboxStatus, PodSandboxStatusRequest, PodSandboxStatusResponse, RemoveContainerRequest,
+    RemoveContainerResponse, RemovePodSandboxRequest, RemovePodSandboxResponse,
+    RunPodSandboxRequest, RunPodSandboxResponse, RuntimeCondition, RuntimeStatus,
+    StartContainerRequest, StartContainerResponse, StatusRequest, StatusResponse,
     StopContainerRequest, StopContainerResponse, StopPodSandboxRequest, StopPodSandboxResponse,
     VersionRequest, VersionResponse,
 };
@@ -79,6 +81,27 @@ impl From<UserContainer> for Container {
             labels: item.config.labels,
             state: item.state,
             metadata: item.config.metadata,
+        }
+    }
+}
+
+impl From<UserContainer> for ContainerStats {
+    fn from(item: UserContainer) -> Self {
+        ContainerStats {
+            attributes: Some(ContainerAttributes {
+                id: item.id,
+                metadata: item.config.metadata,
+                labels: item.config.labels,
+                annotations: item.config.annotations,
+            }),
+            // TODO(taylor): Fetch this and memory usage from the running
+            // thread? If so, we can't use the From trait because we'd need to
+            // handle errors from trying to get the data
+            cpu: None,
+            memory: None,
+            // We don't have an attached filesystem like containers do, so this
+            // shouldn't matter.
+            writable_layer: None,
         }
     }
 }
@@ -463,8 +486,9 @@ impl RuntimeService for CriRuntimeService {
 
     async fn list_containers(
         &self,
-        _req: Request<ListContainersRequest>,
+        req: Request<ListContainersRequest>,
     ) -> CriResult<ListContainersResponse> {
+        let filter: crate::grpc::ContainerFilter = req.into_inner().filter.unwrap_or_default();
         Ok(Response::new(ListContainersResponse {
             containers: self
                 .containers
@@ -472,6 +496,18 @@ impl RuntimeService for CriRuntimeService {
                 .unwrap()
                 .iter()
                 .cloned()
+                .filter(|c| {
+                    (filter.id == "" || c.id == filter.id)
+                        && filter
+                            .state
+                            .as_ref()
+                            .map(|s| s.state == c.state)
+                            .unwrap_or(true)
+                        && (filter.pod_sandbox_id == ""
+                            || c.pod_sandbox_id == filter.pod_sandbox_id)
+                        && (filter.label_selector.is_empty()
+                            || has_labels(&filter.label_selector, &c.config.labels))
+                })
                 .map(Container::from)
                 .collect(),
         }))
@@ -507,6 +543,57 @@ impl RuntimeService for CriRuntimeService {
             info: HashMap::new(),
         }))
     }
+
+    async fn container_stats(
+        &self,
+        req: Request<ContainerStatsRequest>,
+    ) -> CriResult<ContainerStatsResponse> {
+        let id = req.into_inner().container_id;
+        let containers = self.containers.read().unwrap();
+        let container = containers
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| Status::not_found("Container not found"))?;
+        Ok(Response::new(ContainerStatsResponse {
+            stats: Some(container.clone().into()),
+        }))
+    }
+
+    async fn list_container_stats(
+        &self,
+        req: Request<ListContainerStatsRequest>,
+    ) -> CriResult<ListContainerStatsResponse> {
+        let filter = req.into_inner().filter.unwrap_or_default();
+        let containers = self.containers.read().unwrap();
+        let container_stats: Vec<ContainerStats> = containers
+            .iter()
+            .filter(|c| {
+                (filter.id == "" || c.id == filter.id)
+                    && (filter.pod_sandbox_id == "" || c.pod_sandbox_id == filter.pod_sandbox_id)
+                    && (filter.label_selector.is_empty()
+                        || has_labels(&filter.label_selector, &c.config.labels))
+            })
+            .cloned()
+            .map(ContainerStats::from)
+            .collect();
+        Ok(Response::new(ListContainerStatsResponse {
+            stats: container_stats,
+        }))
+    }
+}
+
+// For use in checking if label maps (or any String, String maps) contain all of
+// the search labels (an AND query)
+pub(crate) fn has_labels(
+    search_labels: &HashMap<String, String>,
+    target_labels: &HashMap<String, String>,
+) -> bool {
+    for (key, val) in search_labels.iter() {
+        if target_labels.get(key) != Some(val) {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -515,6 +602,28 @@ mod test {
     use crate::grpc::*;
     use tempfile::tempdir;
     use tonic::Request;
+
+    #[test]
+    fn test_has_labels() {
+        let mut search_labels = HashMap::new();
+        let mut target_labels = HashMap::new();
+
+        target_labels.insert("foo".to_owned(), "bar".to_owned());
+        target_labels.insert("blah".to_owned(), "blah".to_owned());
+
+        // Empty search should return true
+        assert!(has_labels(&search_labels, &target_labels));
+
+        // Missing search term in target should be false
+        search_labels.insert("notreal".to_owned(), "a non existent value".to_owned());
+        search_labels.insert("foo".to_owned(), "bar".to_owned());
+        search_labels.insert("blah".to_owned(), "blah".to_owned());
+        assert!(!has_labels(&search_labels, &target_labels));
+
+        // Matching search should return true
+        search_labels.remove("notreal");
+        assert!(has_labels(&search_labels, &target_labels));
+    }
 
     #[tokio::test]
     async fn test_version() {
@@ -775,15 +884,106 @@ mod test {
     #[tokio::test]
     async fn test_list_containers() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
-        let req = Request::new(ListContainersRequest::default());
+        let mut containers = svc.containers.write().unwrap();
+        let mut labels = HashMap::new();
+        labels.insert("test1".to_owned(), "testing".to_owned());
+        containers.push(UserContainer {
+            id: "test".to_owned(),
+            pod_sandbox_id: "test".to_owned(),
+            state: ContainerState::ContainerRunning as i32,
+            config: ContainerConfig {
+                metadata: Some(ContainerMetadata {
+                    attempt: 1,
+                    name: "test".to_owned(),
+                }),
+                labels: labels.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        containers.push(UserContainer {
+            id: "test2".to_owned(),
+            pod_sandbox_id: "test2".to_owned(),
+            state: ContainerState::ContainerRunning as i32,
+            config: ContainerConfig {
+                metadata: Some(ContainerMetadata {
+                    attempt: 1,
+                    name: "test2".to_owned(),
+                }),
+                labels: HashMap::default(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        containers.push(UserContainer {
+            id: "test3".to_owned(),
+            pod_sandbox_id: "test2".to_owned(),
+            state: ContainerState::ContainerCreated as i32,
+            config: ContainerConfig {
+                metadata: Some(ContainerMetadata {
+                    attempt: 1,
+                    name: "test2".to_owned(),
+                }),
+                labels: HashMap::default(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        drop(containers);
+        let req = Request::new(ListContainersRequest {
+            filter: Some(ContainerFilter::default()),
+        });
         let res = svc.list_containers(req).await;
-        assert_eq!(
-            0,
-            res.expect("successful list containers")
-                .get_ref()
-                .containers
-                .len()
-        );
+        // Nothing set should return all
+        let containers = res.expect("list containers result").into_inner().containers;
+        assert_eq!(3, containers.len());
+
+        // Pod sandbox ID should return all containers in the given sandbox
+        let req = Request::new(ListContainersRequest {
+            filter: Some(ContainerFilter {
+                pod_sandbox_id: "test2".to_owned(),
+                ..Default::default()
+            }),
+        });
+        let res = svc.list_containers(req).await;
+        let containers = res.expect("list containers result").into_inner().containers;
+        assert_eq!(2, containers.len());
+
+        // Labels should only return matching containers
+        let req = Request::new(ListContainersRequest {
+            filter: Some(ContainerFilter {
+                label_selector: labels,
+                ..Default::default()
+            }),
+        });
+        let res = svc.list_containers(req).await;
+        let containers = res.expect("list containers result").into_inner().containers;
+        assert_eq!(1, containers.len());
+
+        // ID and sandbox ID should return a specific container
+        let req = Request::new(ListContainersRequest {
+            filter: Some(ContainerFilter {
+                id: "test2".to_owned(),
+                pod_sandbox_id: "test2".to_owned(),
+                ..Default::default()
+            }),
+        });
+        let res = svc.list_containers(req).await;
+        let containers = res.expect("list containers result").into_inner().containers;
+        assert_eq!(1, containers.len());
+
+        // Status should return a specific container
+        let req = Request::new(ListContainersRequest {
+            filter: Some(ContainerFilter {
+                state: Some(ContainerStateValue {
+                    state: ContainerState::ContainerCreated as i32,
+                }),
+                ..Default::default()
+            }),
+        });
+        let res = svc.list_containers(req).await;
+        let containers = res.expect("list containers result").into_inner().containers;
+        assert_eq!(1, containers.len());
     }
 
     #[tokio::test]
@@ -799,6 +999,144 @@ mod test {
                 .unwrap()
                 .reason
         );
+    }
+
+    #[tokio::test]
+    async fn test_container_stats() {
+        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let mut containers = svc.containers.write().unwrap();
+        let mut labels = HashMap::new();
+        labels.insert("test1".to_owned(), "testing".to_owned());
+        containers.push(UserContainer {
+            id: "test".to_owned(),
+            pod_sandbox_id: "test".to_owned(),
+            config: ContainerConfig {
+                metadata: Some(ContainerMetadata {
+                    attempt: 1,
+                    name: "test".to_owned(),
+                }),
+                labels: labels.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        drop(containers);
+        let req = Request::new(ContainerStatsRequest {
+            container_id: "test".to_owned(),
+        });
+        let res = svc.container_stats(req).await;
+        // We expect an empty response object
+        let stats = res
+            .expect("remove container result")
+            .into_inner()
+            .stats
+            .unwrap();
+        assert_eq!(
+            stats,
+            ContainerStats {
+                attributes: Some(ContainerAttributes {
+                    id: "test".to_owned(),
+                    metadata: Some(ContainerMetadata {
+                        attempt: 1,
+                        name: "test".to_owned(),
+                    }),
+                    labels,
+                    annotations: HashMap::new(),
+                }),
+                cpu: None,
+                memory: None,
+                writable_layer: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_container_stats() {
+        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let mut containers = svc.containers.write().unwrap();
+        let mut labels = HashMap::new();
+        labels.insert("test1".to_owned(), "testing".to_owned());
+        containers.push(UserContainer {
+            id: "test".to_owned(),
+            pod_sandbox_id: "test".to_owned(),
+            config: ContainerConfig {
+                metadata: Some(ContainerMetadata {
+                    attempt: 1,
+                    name: "test".to_owned(),
+                }),
+                labels: labels.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        containers.push(UserContainer {
+            id: "test2".to_owned(),
+            pod_sandbox_id: "test2".to_owned(),
+            config: ContainerConfig {
+                metadata: Some(ContainerMetadata {
+                    attempt: 1,
+                    name: "test2".to_owned(),
+                }),
+                labels: HashMap::default(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        containers.push(UserContainer {
+            id: "test3".to_owned(),
+            pod_sandbox_id: "test2".to_owned(),
+            config: ContainerConfig {
+                metadata: Some(ContainerMetadata {
+                    attempt: 1,
+                    name: "test2".to_owned(),
+                }),
+                labels: HashMap::default(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        drop(containers);
+        let req = Request::new(ListContainerStatsRequest {
+            filter: Some(ContainerStatsFilter::default()),
+        });
+        let res = svc.list_container_stats(req).await;
+        // Nothing set should return all
+        let stats = res.expect("list container stats result").into_inner().stats;
+        assert_eq!(3, stats.len());
+
+        // Pod sandbox ID should return all containers in the given sandbox
+        let req = Request::new(ListContainerStatsRequest {
+            filter: Some(ContainerStatsFilter {
+                pod_sandbox_id: "test2".to_owned(),
+                ..Default::default()
+            }),
+        });
+        let res = svc.list_container_stats(req).await;
+        let stats = res.expect("list container stats result").into_inner().stats;
+        assert_eq!(2, stats.len());
+
+        // Labels should only return matching containers
+        let req = Request::new(ListContainerStatsRequest {
+            filter: Some(ContainerStatsFilter {
+                label_selector: labels,
+                ..Default::default()
+            }),
+        });
+        let res = svc.list_container_stats(req).await;
+        let stats = res.expect("list container stats result").into_inner().stats;
+        assert_eq!(1, stats.len());
+
+        // ID and sandbox ID should return a specific container
+        let req = Request::new(ListContainerStatsRequest {
+            filter: Some(ContainerStatsFilter {
+                id: "test2".to_owned(),
+                pod_sandbox_id: "test2".to_owned(),
+                ..Default::default()
+            }),
+        });
+        let res = svc.list_container_stats(req).await;
+        let stats = res.expect("list container stats result").into_inner().stats;
+        assert_eq!(1, stats.len());
     }
 
     #[tokio::test]
