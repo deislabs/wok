@@ -452,8 +452,12 @@ impl RuntimeService for CriRuntimeService {
 
     async fn remove_container(
         &self,
-        _req: Request<RemoveContainerRequest>,
+        req: Request<RemoveContainerRequest>,
     ) -> CriResult<RemoveContainerResponse> {
+        let id = req.into_inner().container_id;
+        // TODO(taylor): Force a container stop once we have a method for
+        // handling it
+        self.containers.write().unwrap().retain(|c| c.id != id);
         Ok(Response::new(RemoveContainerResponse {}))
     }
 
@@ -736,10 +740,36 @@ mod test {
     #[tokio::test]
     async fn test_remove_container() {
         let svc = CriRuntimeService::new(PathBuf::from(""));
-        let req = Request::new(RemoveContainerRequest::default());
+        let mut containers = svc.containers.write().unwrap();
+        containers.push(UserContainer {
+            id: "test".to_owned(),
+            pod_sandbox_id: "test".to_owned(),
+            image_ref: "doesntmatter".to_owned(),
+            created_at: Utc::now().timestamp_nanos(),
+            state: ContainerState::ContainerRunning as i32,
+            config: ContainerConfig::default(),
+            log_path: None,
+            volumes: Vec::default(),
+        });
+        containers.push(UserContainer {
+            id: "foo".to_owned(),
+            pod_sandbox_id: "foo".to_owned(),
+            image_ref: "doesntmatter".to_owned(),
+            created_at: Utc::now().timestamp_nanos(),
+            state: ContainerState::ContainerRunning as i32,
+            config: ContainerConfig::default(),
+            log_path: None,
+            volumes: Vec::default(),
+        });
+        drop(containers);
+        let req = Request::new(RemoveContainerRequest {
+            container_id: "test".to_owned(),
+        });
         let res = svc.remove_container(req).await;
         // We expect an empty response object
         res.expect("remove container result");
+        // Check for the container to be gone and that we still have one left
+        assert_eq!(1, svc.containers.read().unwrap().len());
     }
 
     #[tokio::test]
