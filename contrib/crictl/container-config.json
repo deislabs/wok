@@ -1,0 +1,10 @@
+{
+    "metadata": {
+        "name": "hello-wasm"
+    },
+    "image":{
+        "image": "webassembly.azurecr.io/hello-wasm:v1"
+    },
+    "log_path":"hello-wasm/0.log",
+    "linux": {}
+}
