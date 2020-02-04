@@ -208,10 +208,10 @@ impl LucetRuntime {
 
 impl Runtime for LucetRuntime {
     fn run(&mut self) -> Result<()> {
-        let module = DlModule::load(&self.module_path).expect("Lucet module can be loaded");
+        let module = DlModule::load(&self.module_path).expect("Lucet module can't be loaded");
 
         let region =
-            MmapRegion::create(1, &Limits::default()).expect("Lucet region can be created");
+            MmapRegion::create(1, &Limits::default()).expect("Lucet region can't be created");
 
         let mut ctx = WasiCtxBuilder::new()
             .args(&self.args)
@@ -227,15 +227,15 @@ impl Runtime for LucetRuntime {
 
         let mut inst = region
             .new_instance_builder(module)
-            .with_embed_ctx(ctx.build().expect("Lucet ctx can be created"))
+            .with_embed_ctx(ctx.build().expect("failed to create Lucet context"))
             .build()
-            .expect("Lucet instance can be created");
+            .expect("failed to create Lucet instance");
 
         self.kill_switch = Some(inst.kill_switch());
 
         // execute module in another thread
         thread::spawn(move || {
-            inst.run("main", &[]).expect("instance can run");
+            inst.run("main", &[]).expect("Lucet instance can't run");
         });
 
         Ok(())

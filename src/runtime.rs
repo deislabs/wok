@@ -557,9 +557,9 @@ impl RuntimeService for CriRuntimeService {
                     HashMap::new(),
                     &log_path,
                 )
-                .expect("Lucet runtime can be created");
+                .expect("Lucet runtime can't be created");
 
-                runtime.run().expect("Lucet runtime can run");
+                runtime.run().expect("Lucet runtime can't run");
                 let mut running_containers = self.running_containers.write().unwrap();
                 running_containers.insert(container.id, runtime);
             }
