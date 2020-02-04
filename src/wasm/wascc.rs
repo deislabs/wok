@@ -69,6 +69,11 @@ pub fn wascc_run(
 mod test {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    const ECHO_LIB: &str = "../lib/libecho_provider.so";
+    #[cfg(target_os = "macos")]
+    const ECHO_LIB: &str = "./lib/libecho_provider.dylib";
+
     #[test]
     fn test_register_native_capabilities() {
         register_native_capabilities().expect("HTTP capability is registered");
@@ -93,8 +98,7 @@ mod test {
 
     #[test]
     fn test_wascc_echo() {
-        let data = NativeCapability::from_file("./lib/libecho_provider.dylib")
-            .expect("loaded echo library");
+        let data = NativeCapability::from_file(ECHO_LIB).expect("loaded echo library");
         host::add_native_capability(data).expect("added echo capability");
 
         // TODO: use wascc_run to execute echo_actor
