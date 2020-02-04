@@ -23,6 +23,10 @@ use crate::grpc::{
     StopContainerRequest, StopContainerResponse, StopPodSandboxRequest, StopPodSandboxResponse,
     VersionRequest, VersionResponse,
 };
+use crate::wasm::Runtime;
+use log::error;
+use std::sync::mpsc::{channel, Sender};
+use tokio::task::JoinHandle;
 
 /// The version of the runtime API that this tool knows.
 /// See CRI-O for reference (since docs don't explain this)
@@ -128,6 +132,7 @@ pub struct CriRuntimeService {
     // NOTE: we could replace this with evmap or crossbeam
     sandboxes: Arc<RwLock<BTreeMap<String, PodSandbox>>>,
     containers: Arc<RwLock<Vec<UserContainer>>>,
+    running_containers: Arc<RwLock<HashMap<String, RuntimeContainerCancellationToken>>>,
     root_dir: PathBuf,
 }
 
@@ -137,6 +142,7 @@ impl CriRuntimeService {
         CriRuntimeService {
             sandboxes: Arc::new(RwLock::new(BTreeMap::default())),
             containers: Arc::new(RwLock::new(vec![])),
+            running_containers: Arc::new(RwLock::new(HashMap::new())),
             root_dir: dir,
         }
     }
@@ -414,9 +420,9 @@ impl RuntimeService for CriRuntimeService {
             state: ContainerState::ContainerCreated as i32,
             created_at: Utc::now().timestamp_nanos(),
             config: container_config.to_owned(),
-            log_path: None,           // to be set further down
-            image_ref: "".to_owned(), // FIXME(bacongobbler): resolve this to the local image reference based on config.image.name
-            volumes: vec![],          // to be added further down
+            log_path: None, // to be set further down
+            image_ref: container_config.image.as_ref().unwrap().image.clone(), // FIXME(rylev): understand what it means for the image to be None
+            volumes: vec![], // to be added further down
         };
 
         // create container root directory.
@@ -461,8 +467,67 @@ impl RuntimeService for CriRuntimeService {
 
     async fn start_container(
         &self,
-        _req: Request<StartContainerRequest>,
+        req: Request<StartContainerRequest>,
     ) -> CriResult<StartContainerResponse> {
+        let id = req.into_inner().container_id;
+
+        // Create specific scope for the container read lock
+        let (runtime, container) = {
+            let containers = self.containers.read().unwrap();
+            let container = containers
+                .iter()
+                .find(|c| c.id == id)
+                .ok_or_else(|| Status::not_found("Container not found"))?;
+            let sandboxes = self.sandboxes.read().unwrap();
+            let sandbox = sandboxes
+                .get(&container.pod_sandbox_id)
+                .ok_or_else(|| Status::not_found("Sandbox not found"))?;
+
+            let runtime = RuntimeHandler::from_string(&sandbox.runtime_handler)
+                .map_err(|_| Status::invalid_argument("Invalid runtime handler"))?;
+
+            (runtime, container.clone())
+        };
+        // TODO: handle unset log path
+        let log_path = container.log_path.as_ref().expect("No log set");
+        tokio::fs::create_dir_all(log_path).await?;
+
+        match runtime {
+            RuntimeHandler::WASCC => todo!("Handle wasCC"),
+            RuntimeHandler::WASI => {
+                use std::convert::TryFrom;
+
+                // TODO: handle error
+                let image_ref = crate::oci::ImageRef::try_from(&container.image_ref)
+                    .expect("Failed to parse image_ref");
+                let module_path = image_ref
+                    .file_path(&self.root_dir)
+                    .into_os_string()
+                    .into_string()
+                    .unwrap();
+                let env: HashMap<String, String> = container
+                    .config
+                    .envs
+                    .iter()
+                    .cloned()
+                    .map(|pair| (pair.key, pair.value))
+                    .collect();
+
+                let runtime = crate::wasm::WasiRuntime::new(
+                    module_path,
+                    env,
+                    container.config.args.clone(),
+                    // TODO: dirs
+                    HashMap::new(),
+                    &log_path,
+                )
+                .expect("Creating runtime failed");
+
+                let token = RuntimeContainer::new(runtime).start();
+                let mut running_containers = self.running_containers.write().unwrap();
+                running_containers.insert(container.id, token);
+            }
+        };
         Ok(Response::new(StartContainerResponse {}))
     }
 
@@ -812,11 +877,16 @@ mod test {
             },
         );
         drop(sandboxes);
+        let mut config = ContainerConfig::default();
+        config.image = Some(ImageSpec {
+            image: "foo/bar:baz".to_owned(),
+        });
         let req = Request::new(CreateContainerRequest {
             pod_sandbox_id: "test".to_owned(),
-            config: None,
+            config: Some(config),
             sandbox_config: None,
         });
+
         let res = svc.create_container(req).await;
         // We can't have a deterministic container id, so just check it is a valid uuid
         uuid::Uuid::parse_str(
@@ -830,8 +900,56 @@ mod test {
 
     #[tokio::test]
     async fn test_start_container() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
-        let req = Request::new(StartContainerRequest::default());
+        // Put every file in a temp dir so it's automatically cleaned up
+        let dir = tempdir().expect("Couldn't create temp directory");
+        let svc = CriRuntimeService::new(dir.path().to_owned());
+
+        let image_ref = crate::oci::ImageRef {
+            whole: "foo/bar:baz",
+            registry: "foo",
+            repo: "bar",
+            tag: "baz",
+        };
+
+        // create temp directories
+        let log_dir_name = dir.path().join("testdir");
+        let image_file = image_ref.file_path(dir.path());
+        // log directory
+        tokio::fs::create_dir_all(&log_dir_name)
+            .await
+            .expect("Could't create log directory");
+        // wasm file directory
+        tokio::fs::create_dir_all(image_file.parent().unwrap())
+            .await
+            .expect("Couldn't create wasm file director");
+        // read and write wasm
+        let wasm = tokio::fs::read("examples/printer.wasm")
+            .await
+            .expect("Couldn't read wasm");
+        tokio::fs::write(image_file, wasm)
+            .await
+            .expect("couldn't write wasm");
+
+        // create sandbox and container
+        let sandbox = PodSandbox::default();
+        let mut container = UserContainer::default();
+
+        let container_id = {
+            // write container
+            let mut containers = svc.containers.write().unwrap();
+            container.pod_sandbox_id = sandbox.id.clone();
+            container.log_path = Some(log_dir_name);
+            container.image_ref = image_ref.whole.to_owned();
+            let container_id = container.id.clone();
+
+            containers.push(container);
+
+            // write sandbox
+            let mut sandboxes = svc.sandboxes.write().unwrap();
+            sandboxes.insert(sandbox.id.clone(), sandbox);
+            container_id
+        };
+        let req = Request::new(StartContainerRequest { container_id });
         let res = svc.start_container(req).await;
         // We expect an empty response object
         res.expect("start container result");
@@ -1182,5 +1300,40 @@ mod test {
         assert_eq!(1, sandboxes.len());
         // And make sure the UID returned actually exists
         assert_eq!(id, sandboxes[0].id);
+    }
+}
+
+pub struct RuntimeContainer {
+    handle: JoinHandle<Result<()>>,
+    sender: Sender<()>,
+}
+
+impl RuntimeContainer {
+    pub fn new<T: Runtime + Send + 'static>(rt: T) -> Self {
+        let (sender, receiver) = channel::<()>();
+        let handle = tokio::task::spawn_blocking(move || {
+            receiver.recv().unwrap();
+            if let Err(e) = rt.run() {
+                // TODO(taylor): Implement messaging here to indicate that there was a problem running the module
+                error!("Error while running module: {}", e);
+                todo!("Error type")
+            }
+            Ok(())
+        });
+        RuntimeContainer { handle, sender }
+    }
+
+    pub fn start(self) -> RuntimeContainerCancellationToken {
+        self.sender.send(()).unwrap();
+        RuntimeContainerCancellationToken(self.handle)
+    }
+}
+
+#[derive(Debug)]
+pub struct RuntimeContainerCancellationToken(JoinHandle<Result<()>>);
+
+impl RuntimeContainerCancellationToken {
+    pub fn stop(self) {
+        panic!("Stopping a running container is not currently supported");
     }
 }

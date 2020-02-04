@@ -1,18 +1,19 @@
 extern crate wok;
 
+use std::collections::HashMap;
 use std::io::Read;
-use wok::wasm::{DirMapping, EnvVars, Runtime, WasiRuntime};
+use wok::wasm::{Runtime, WasiRuntime};
 
 fn main() {
-    let mut dirs = DirMapping::default();
+    let mut dirs = HashMap::default();
     dirs.insert(".".into(), None);
 
-    let mut env = EnvVars::default();
+    let mut env = HashMap::default();
     env.insert("FOO".into(), "bar".into());
 
     let args: Vec<String> = vec!["a", "lovely", "bunch", "of", "coconuts"]
         .iter()
-        .map(|s| (*s).to_string())
+        .map(|&s| s.to_owned())
         .collect();
 
     let runtime = WasiRuntime::new("./examples/printer.wasm", env, args, dirs, "./").unwrap();
