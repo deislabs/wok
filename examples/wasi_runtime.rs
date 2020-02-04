@@ -16,7 +16,7 @@ fn main() {
         .map(|&s| s.to_owned())
         .collect();
 
-    let runtime = WasiRuntime::new("./examples/printer.wasm", env, args, dirs, "./").unwrap();
+    let mut runtime = WasiRuntime::new("./examples/printer.wasm", env, args, dirs, "./").unwrap();
 
     runtime.run().unwrap();
     let (mut stdout_buf, mut stderr_buf) = runtime.output().unwrap();

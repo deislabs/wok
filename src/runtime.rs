@@ -23,10 +23,7 @@ use crate::grpc::{
     StopContainerRequest, StopContainerResponse, StopPodSandboxRequest, StopPodSandboxResponse,
     VersionRequest, VersionResponse,
 };
-use crate::wasm::Runtime;
-use log::error;
-use std::sync::mpsc::{channel, Sender};
-use tokio::task::JoinHandle;
+use crate::wasm::{LucetRuntime, Runtime};
 
 /// The version of the runtime API that this tool knows.
 /// See CRI-O for reference (since docs don't explain this)
@@ -127,12 +124,12 @@ impl From<PodSandbox> for PodSandboxStatus {
 }
 
 /// Implement a CRI runtime service.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct CriRuntimeService {
     // NOTE: we could replace this with evmap or crossbeam
     sandboxes: Arc<RwLock<BTreeMap<String, PodSandbox>>>,
     containers: Arc<RwLock<Vec<UserContainer>>>,
-    running_containers: Arc<RwLock<HashMap<String, RuntimeContainerCancellationToken>>>,
+    running_containers: Arc<RwLock<HashMap<String, LucetRuntime>>>,
     root_dir: PathBuf,
 }
 
@@ -152,6 +149,7 @@ impl CriRuntimeService {
 pub enum RuntimeHandler {
     WASI,
     WASCC,
+    LUCET,
 }
 
 impl ToString for RuntimeHandler {
@@ -159,6 +157,7 @@ impl ToString for RuntimeHandler {
         match self {
             Self::WASI => "WASI".to_owned(),
             Self::WASCC => "WASCC".to_owned(),
+            Self::LUCET => "LUCET".to_owned(),
         }
     }
 }
@@ -170,6 +169,7 @@ impl RuntimeHandler {
             "" => Ok(Self::default()),
             "WASI" => Ok(Self::WASI),
             "WASCC" => Ok(Self::WASCC),
+            "LUCET" => Ok(Self::LUCET),
             _ => Err(format_err!("Invalid runtime handler {}", s)),
         }
     }
@@ -177,7 +177,7 @@ impl RuntimeHandler {
 
 impl Default for RuntimeHandler {
     fn default() -> Self {
-        Self::WASI
+        Self::LUCET
     }
 }
 
@@ -494,7 +494,43 @@ impl RuntimeService for CriRuntimeService {
 
         match runtime {
             RuntimeHandler::WASCC => todo!("Handle wasCC"),
-            RuntimeHandler::WASI => {
+            RuntimeHandler::WASI => todo!("Handle WASI"),
+            // RuntimeHandler::WASI => {
+            //     use std::convert::TryFrom;
+
+            //     // TODO: handle error
+            //     let image_ref = crate::oci::ImageRef::try_from(&container.image_ref)
+            //         .expect("Failed to parse image_ref");
+            //     let module_path = image_ref
+            //         .file_path(&self.root_dir)
+            //         .into_os_string()
+            //         .into_string()
+            //         .unwrap();
+            //     let env: HashMap<String, String> = container
+            //         .config
+            //         .envs
+            //         .iter()
+            //         .cloned()
+            //         .map(|pair| (pair.key, pair.value))
+            //         .collect();
+
+            //     println!("Reading {:?}", module_path);
+
+            //     let runtime = WasiRuntime::new(
+            //         module_path,
+            //         env,
+            //         container.config.args.clone(),
+            //         // TODO: dirs
+            //         HashMap::new(),
+            //         &log_path,
+            //     )
+            //     .expect("Creating runtime failed");
+
+            //     runtime.run();
+            //     let mut running_containers = self.running_containers.write().unwrap();
+            //     running_containers.insert(container.id, runtime);
+            // }
+            RuntimeHandler::LUCET => {
                 use std::convert::TryFrom;
 
                 // TODO: handle error
@@ -513,19 +549,19 @@ impl RuntimeService for CriRuntimeService {
                     .map(|pair| (pair.key, pair.value))
                     .collect();
 
-                let runtime = crate::wasm::WasiRuntime::new(
-                    module_path,
+                let mut runtime = LucetRuntime::new(
+                    PathBuf::from(module_path),
                     env,
                     container.config.args.clone(),
                     // TODO: dirs
                     HashMap::new(),
                     &log_path,
                 )
-                .expect("Creating runtime failed");
+                .expect("Lucet runtime can be created");
 
-                let token = RuntimeContainer::new(runtime).start();
+                runtime.run().expect("Lucet runtime can run");
                 let mut running_containers = self.running_containers.write().unwrap();
-                running_containers.insert(container.id, token);
+                running_containers.insert(container.id, runtime);
             }
         };
         Ok(Response::new(StartContainerResponse {}))
@@ -1300,40 +1336,5 @@ mod test {
         assert_eq!(1, sandboxes.len());
         // And make sure the UID returned actually exists
         assert_eq!(id, sandboxes[0].id);
-    }
-}
-
-pub struct RuntimeContainer {
-    handle: JoinHandle<Result<()>>,
-    sender: Sender<()>,
-}
-
-impl RuntimeContainer {
-    pub fn new<T: Runtime + Send + 'static>(rt: T) -> Self {
-        let (sender, receiver) = channel::<()>();
-        let handle = tokio::task::spawn_blocking(move || {
-            receiver.recv().unwrap();
-            if let Err(e) = rt.run() {
-                // TODO(taylor): Implement messaging here to indicate that there was a problem running the module
-                error!("Error while running module: {}", e);
-                todo!("Error type")
-            }
-            Ok(())
-        });
-        RuntimeContainer { handle, sender }
-    }
-
-    pub fn start(self) -> RuntimeContainerCancellationToken {
-        self.sender.send(()).unwrap();
-        RuntimeContainerCancellationToken(self.handle)
-    }
-}
-
-#[derive(Debug)]
-pub struct RuntimeContainerCancellationToken(JoinHandle<Result<()>>);
-
-impl RuntimeContainerCancellationToken {
-    pub fn stop(self) {
-        panic!("Stopping a running container is not currently supported");
     }
 }
