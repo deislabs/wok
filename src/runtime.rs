@@ -369,7 +369,6 @@ impl RuntimeService for CriRuntimeService {
         let container_root_dir = self.root_dir.join("containers").join(&id);
         std::fs::create_dir_all(&container_root_dir)?;
 
-        println!("Here {:?}", container_root_dir);
         // generate volume mounts.
         for mount in container_config.mounts {
             let volume_id = Uuid::new_v4().to_string();
@@ -453,8 +452,6 @@ impl RuntimeService for CriRuntimeService {
                     .cloned()
                     .map(|pair| (pair.key, pair.value))
                     .collect();
-
-                println!("Reading {:?}", module_path);
 
                 let runtime = crate::wasm::WasiRuntime::new(
                     module_path,
@@ -707,9 +704,13 @@ mod test {
             },
         );
         drop(sandboxes);
+        let mut config = ContainerConfig::default();
+        config.image = Some(ImageSpec {
+            image: "foo/bar:baz".to_owned(),
+        });
         let req = Request::new(CreateContainerRequest {
             pod_sandbox_id: "test".to_owned(),
-            config: None,
+            config: Some(config),
             sandbox_config: None,
         });
 
