@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::thread;
 use tempfile::NamedTempFile;
 use wasi_common::*;
 use wasmtime::*;
@@ -230,9 +231,13 @@ impl Runtime for LucetRuntime {
             .build()
             .expect("Lucet instance can be created");
 
-        inst.run("main", &[]).expect("instance can run");
-
         self.kill_switch = Some(inst.kill_switch());
+
+        // execute module in another thread
+        thread::spawn(move || {
+            inst.run("main", &[]).expect("instance can run");
+        });
+
         Ok(())
     }
 
