@@ -573,7 +573,9 @@ impl RuntimeService for CriRuntimeService {
     ) -> CriResult<StopContainerResponse> {
         let id = req.into_inner().container_id;
         let mut running_containers = self.running_containers.write().unwrap();
-        let runtime = running_containers.get_mut(&id).expect("cannot find container");
+        let runtime = running_containers
+            .get_mut(&id)
+            .expect("cannot find container");
         runtime.stop().expect("runtime can't stop");
         running_containers.remove(&id);
         Ok(Response::new(StopContainerResponse {}))
