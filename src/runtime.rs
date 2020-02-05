@@ -322,10 +322,27 @@ impl RuntimeService for CriRuntimeService {
 
     async fn list_pod_sandbox(
         &self,
-        _req: Request<ListPodSandboxRequest>,
+        req: Request<ListPodSandboxRequest>,
     ) -> CriResult<ListPodSandboxResponse> {
+        let filter = req.into_inner().filter.unwrap_or_default();
         Ok(Response::new(ListPodSandboxResponse {
-            items: self.sandboxes.read().unwrap().values().cloned().collect(),
+            items: self
+                .sandboxes
+                .read()
+                .unwrap()
+                .values()
+                .filter(|sand| {
+                    (filter.id == "" || sand.id == filter.id)
+                        && filter
+                            .state
+                            .as_ref()
+                            .map(|s| s.state == sand.state)
+                            .unwrap_or(true)
+                        && (filter.label_selector.is_empty()
+                            || has_labels(&filter.label_selector, &sand.labels))
+                })
+                .cloned()
+                .collect(),
         }))
     }
 
@@ -587,7 +604,7 @@ impl RuntimeService for CriRuntimeService {
         &self,
         req: Request<ListContainersRequest>,
     ) -> CriResult<ListContainersResponse> {
-        let filter: crate::grpc::ContainerFilter = req.into_inner().filter.unwrap_or_default();
+        let filter = req.into_inner().filter.unwrap_or_default();
         Ok(Response::new(ListContainersResponse {
             containers: self
                 .containers
@@ -815,9 +832,77 @@ mod test {
     #[tokio::test]
     async fn test_list_pod_sandbox() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
-        let req = Request::new(ListPodSandboxRequest::default());
+        let mut sandboxes = svc.sandboxes.write().unwrap();
+        let mut labels = HashMap::new();
+        labels.insert("test1".to_owned(), "testing".to_owned());
+        sandboxes.insert(
+            "test".to_owned(),
+            PodSandbox {
+                id: "test".to_owned(),
+                state: PodSandboxState::SandboxReady as i32,
+                labels: labels.clone(),
+                ..Default::default()
+            },
+        );
+        sandboxes.insert(
+            "test2".to_owned(),
+            PodSandbox {
+                id: "test2".to_owned(),
+                state: PodSandboxState::SandboxReady as i32,
+                ..Default::default()
+            },
+        );
+        sandboxes.insert(
+            "test3".to_owned(),
+            PodSandbox {
+                id: "test3".to_owned(),
+                state: PodSandboxState::SandboxNotready as i32,
+                ..Default::default()
+            },
+        );
+        drop(sandboxes);
+        let req = Request::new(ListPodSandboxRequest {
+            filter: Some(PodSandboxFilter::default()),
+        });
         let res = svc.list_pod_sandbox(req).await;
-        assert_eq!(0, res.expect("successful pod list").get_ref().items.len());
+        // Nothing set should return all
+        let sandboxes = res.expect("list sandboxes result").into_inner().items;
+        assert_eq!(3, sandboxes.len());
+
+        // Labels should only return matching containers
+        let req = Request::new(ListPodSandboxRequest {
+            filter: Some(PodSandboxFilter {
+                label_selector: labels,
+                ..Default::default()
+            }),
+        });
+        let res = svc.list_pod_sandbox(req).await;
+        let sandboxes = res.expect("list sandboxes result").into_inner().items;
+        assert_eq!(1, sandboxes.len());
+
+        // ID should return a specific sandbox
+        let req = Request::new(ListPodSandboxRequest {
+            filter: Some(PodSandboxFilter {
+                id: "test2".to_owned(),
+                ..Default::default()
+            }),
+        });
+        let res = svc.list_pod_sandbox(req).await;
+        let sandboxes = res.expect("list sandboxes result").into_inner().items;
+        assert_eq!(1, sandboxes.len());
+
+        // Status should return a specific sandbox
+        let req = Request::new(ListPodSandboxRequest {
+            filter: Some(PodSandboxFilter {
+                state: Some(PodSandboxStateValue {
+                    state: PodSandboxState::SandboxNotready as i32,
+                }),
+                ..Default::default()
+            }),
+        });
+        let res = svc.list_pod_sandbox(req).await;
+        let sandboxes = res.expect("list sandboxes result").into_inner().items;
+        assert_eq!(1, sandboxes.len());
     }
 
     #[tokio::test]
