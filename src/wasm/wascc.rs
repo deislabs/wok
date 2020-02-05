@@ -24,7 +24,7 @@ pub fn register_native_capabilities() -> Result<(), failure::Error> {
 }
 
 /// Run a WasCC module inside of the host.
-pub fn wascc_run_http(data: &[u8], env: EnvVars, key: &str) -> Result<(), failure::Error> {
+pub fn wascc_run_http(data: Vec<u8>, env: EnvVars, key: &str) -> Result<(), failure::Error> {
     let mut httpenv: HashMap<String, String> = HashMap::new();
     httpenv.insert(
         "PORT".into(),
@@ -37,28 +37,27 @@ pub fn wascc_run_http(data: &[u8], env: EnvVars, key: &str) -> Result<(), failur
         data,
         key,
         vec![Capability {
-            name: HTTP_CAPABILITY.to_owned(),
+            name: HTTP_CAPABILITY,
             env,
         }],
     )
 }
 
 pub struct Capability {
-    name: String,
+    name: &'static str,
     env: EnvVars,
 }
 
 pub fn wascc_run(
-    data: &[u8],
+    data: Vec<u8>,
     key: &str,
     capabilities: Vec<Capability>,
 ) -> Result<(), failure::Error> {
-    let load =
-        Actor::from_bytes(data.to_vec()).map_err(|e| format_err!("Error loading WASM: {}", e))?;
+    let load = Actor::from_bytes(data).map_err(|e| format_err!("Error loading WASM: {}", e))?;
     host::add_actor(load).map_err(|e| format_err!("Error adding actor: {}", e))?;
 
     capabilities.iter().try_for_each(|cap| {
-        host::configure(key, cap.name.as_str(), cap.env.clone())
+        host::configure(key, cap.name, cap.env.clone())
             .map_err(|e| format_err!("Error configuring capabilities for module: {}", e))
     })?;
     info!("Instance executing");
@@ -86,7 +85,7 @@ mod test {
         let data = std::fs::read("./lib/greet_actor_signed.wasm").expect("read the wasm file");
         // Send into wascc_run
         wascc_run_http(
-            &data,
+            data,
             EnvVars::new(),
             "MADK3R3H47FGXN5F4HWPSJH4WCKDWKXQBBIOVI7YEPEYEMGJ2GDFIFE5",
         )
@@ -106,10 +105,10 @@ mod test {
         let wasm = std::fs::read("./testdata/echo_actor_signed.wasm").expect("load echo WASM");
         // TODO: use wascc_run to execute echo_actor
         wascc_run(
-            &wasm,
+            wasm,
             key,
             vec![Capability {
-                name: "wok:echoProvider".to_string(),
+                name: "wok:echoProvider",
                 env: EnvVars::new(),
             }],
         )
