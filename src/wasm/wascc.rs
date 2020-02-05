@@ -24,11 +24,7 @@ pub fn register_native_capabilities() -> Result<(), failure::Error> {
 }
 
 /// Run a WasCC module inside of the host.
-pub fn wascc_run(data: &[u8], env: EnvVars, key: &str) -> Result<(), failure::Error> {
-    let load =
-        Actor::from_bytes(data.to_vec()).map_err(|e| format_err!("Error loading WASM: {}", e))?;
-    host::add_actor(load).map_err(|e| format_err!("Error adding actor: {}", e))?;
-
+pub fn wascc_run_http(data: Vec<u8>, env: EnvVars, key: &str) -> Result<(), failure::Error> {
     let mut httpenv: HashMap<String, String> = HashMap::new();
     httpenv.insert(
         "PORT".into(),
@@ -37,9 +33,33 @@ pub fn wascc_run(data: &[u8], env: EnvVars, key: &str) -> Result<(), failure::Er
             .unwrap_or_else(|| "80".to_string()),
     );
 
-    // TODO: Middleware provider for env vars
-    host::configure(key, HTTP_CAPABILITY, httpenv)
-        .map_err(|e| format_err!("Error configuring HTTP server for module: {}", e))?;
+    wascc_run(
+        data,
+        key,
+        vec![Capability {
+            name: HTTP_CAPABILITY,
+            env,
+        }],
+    )
+}
+
+pub struct Capability {
+    name: &'static str,
+    env: EnvVars,
+}
+
+pub fn wascc_run(
+    data: Vec<u8>,
+    key: &str,
+    capabilities: Vec<Capability>,
+) -> Result<(), failure::Error> {
+    let load = Actor::from_bytes(data).map_err(|e| format_err!("Error loading WASM: {}", e))?;
+    host::add_actor(load).map_err(|e| format_err!("Error adding actor: {}", e))?;
+
+    capabilities.iter().try_for_each(|cap| {
+        host::configure(key, cap.name, cap.env.clone())
+            .map_err(|e| format_err!("Error configuring capabilities for module: {}", e))
+    })?;
     info!("Instance executing");
     Ok(())
 }
@@ -47,6 +67,11 @@ pub fn wascc_run(data: &[u8], env: EnvVars, key: &str) -> Result<(), failure::Er
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    const ECHO_LIB: &str = "./lib/libecho_provider.so";
+    #[cfg(target_os = "macos")]
+    const ECHO_LIB: &str = "./lib/libecho_provider.dylib";
 
     #[test]
     fn test_register_native_capabilities() {
@@ -59,8 +84,8 @@ mod test {
         // Open file
         let data = std::fs::read("./lib/greet_actor_signed.wasm").expect("read the wasm file");
         // Send into wascc_run
-        wascc_run(
-            &data,
+        wascc_run_http(
+            data,
             EnvVars::new(),
             "MADK3R3H47FGXN5F4HWPSJH4WCKDWKXQBBIOVI7YEPEYEMGJ2GDFIFE5",
         )
@@ -68,5 +93,25 @@ mod test {
 
         host::remove_actor("MADK3R3H47FGXN5F4HWPSJH4WCKDWKXQBBIOVI7YEPEYEMGJ2GDFIFE5")
             .expect("Removed the actor");
+    }
+
+    #[test]
+    fn test_wascc_echo() {
+        let data = NativeCapability::from_file(ECHO_LIB).expect("loaded echo library");
+        host::add_native_capability(data).expect("added echo capability");
+
+        let key = "MDAYLDTOZEHQFPB3CL5PAFY5UTNCW32P54XGWYX3FOM2UBRYNCP3I3BF";
+
+        let wasm = std::fs::read("./testdata/echo_actor_signed.wasm").expect("load echo WASM");
+        // TODO: use wascc_run to execute echo_actor
+        wascc_run(
+            wasm,
+            key,
+            vec![Capability {
+                name: "wok:echoProvider",
+                env: EnvVars::new(),
+            }],
+        )
+        .expect("completed echo run")
     }
 }
