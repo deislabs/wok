@@ -69,7 +69,7 @@ mod test {
     use super::*;
 
     #[cfg(target_os = "linux")]
-    const ECHO_LIB: &str = "../lib/libecho_provider.so";
+    const ECHO_LIB: &str = "./lib/libecho_provider.so";
     #[cfg(target_os = "macos")]
     const ECHO_LIB: &str = "./lib/libecho_provider.dylib";
 
