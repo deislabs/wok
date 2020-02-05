@@ -59,7 +59,7 @@ pub fn wascc_run(
 
     capabilities.iter().try_for_each(|cap| {
         host::configure(key, cap.name.as_str(), cap.env.clone())
-            .map_err(|e| format_err!("Error configuring HTTP server for module: {}", e))
+            .map_err(|e| format_err!("Error configuring capabilities for module: {}", e))
     })?;
     info!("Instance executing");
     Ok(())
@@ -101,6 +101,18 @@ mod test {
         let data = NativeCapability::from_file(ECHO_LIB).expect("loaded echo library");
         host::add_native_capability(data).expect("added echo capability");
 
+        let key = "MDAYLDTOZEHQFPB3CL5PAFY5UTNCW32P54XGWYX3FOM2UBRYNCP3I3BF";
+
+        let wasm = std::fs::read("./testdata/echo_actor_signed.wasm").expect("load echo WASM");
         // TODO: use wascc_run to execute echo_actor
+        wascc_run(
+            &wasm,
+            key,
+            vec![Capability {
+                name: "wok:echoProvider".to_string(),
+                env: EnvVars::new(),
+            }],
+        )
+        .expect("completed echo run")
     }
 }
