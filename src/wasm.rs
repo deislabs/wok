@@ -30,9 +30,9 @@ pub struct WasiRuntime {
     /// the same path will be allowed in the runtime
     dirs: HashMap<String, Option<String>>,
     /// Handle to stdout
-    stdout: NamedTempFile,
+    stdout: Option<NamedTempFile>,
     /// handle to stderr
-    stderr: NamedTempFile,
+    stderr: Option<NamedTempFile>,
 }
 
 impl Runtime for WasiRuntime {
@@ -44,11 +44,16 @@ impl Runtime for WasiRuntime {
         let global_exports = store.global_exports().clone();
         let store = HostRef::new(store);
 
-        let mut ctx_builder = WasiCtxBuilder::new()
-            .args(&self.args)
-            .envs(&self.env)
-            .stdout(self.stdout.reopen()?)
-            .stderr(self.stderr.reopen()?);
+        let ctx_builder = WasiCtxBuilder::new().args(&self.args).envs(&self.env);
+        let ctx_builder = match &self.stdout {
+            Some(f) => ctx_builder.stdout(f.reopen()?),
+            None => ctx_builder,
+        };
+
+        let mut ctx_builder = match &self.stderr {
+            Some(f) => ctx_builder.stderr(f.reopen()?),
+            None => ctx_builder,
+        };
 
         for (key, value) in self.dirs.iter() {
             let guest_dir = value.as_ref().unwrap_or(key);
@@ -100,8 +105,16 @@ impl Runtime for WasiRuntime {
         // As warned in the BufReader docs, creating multiple BufReaders on the
         // same stream can cause data loss. So reopen a new file object each
         // time this function as called so as to not drop any data
-        let stdout = self.stdout.reopen()?;
-        let stderr = self.stderr.reopen()?;
+        let stdout = match &self.stdout {
+            Some(s) => s,
+            None => return Err(format_err!("logging is not enabled for this runtime")),
+        }
+        .reopen()?;
+        let stderr = match &self.stderr {
+            Some(s) => s,
+            None => return Err(format_err!("logging is not enabled for this runtime")),
+        }
+        .reopen()?;
 
         Ok((BufReader::new(stdout), BufReader::new(stderr)))
     }
@@ -124,7 +137,7 @@ impl WasiRuntime {
         env: HashMap<String, String>,
         args: Vec<String>,
         dirs: HashMap<String, Option<String>>,
-        log_file_location: L,
+        log_file_location: Option<L>,
     ) -> Result<Self> {
         let module_data = std::fs::read(module_path)?;
 
@@ -134,8 +147,14 @@ impl WasiRuntime {
         // think it necessary, we can make these permanent files with a cleanup
         // loop that runs elsewhere. These will get deleted when the reference
         // is dropped
-        let stdout = NamedTempFile::new_in(log_file_location)?;
-        let stderr = NamedTempFile::new_in(log_file_location)?;
+        let stdout = match log_file_location {
+            Some(l) => Some(NamedTempFile::new_in(l)?),
+            None => None,
+        };
+        let stderr = match log_file_location {
+            Some(l) => Some(NamedTempFile::new_in(l)?),
+            None => None,
+        };
 
         Ok(WasiRuntime {
             module_data,
