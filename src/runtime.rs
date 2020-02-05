@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
@@ -21,9 +22,10 @@ use crate::grpc::{
     RunPodSandboxRequest, RunPodSandboxResponse, RuntimeCondition, RuntimeStatus,
     StartContainerRequest, StartContainerResponse, StatusRequest, StatusResponse,
     StopContainerRequest, StopContainerResponse, StopPodSandboxRequest, StopPodSandboxResponse,
-    VersionRequest, VersionResponse,
+    UpdateRuntimeConfigRequest, UpdateRuntimeConfigResponse, VersionRequest, VersionResponse,
 };
 use crate::wasm::Runtime;
+use ipnet::IpNet;
 use log::error;
 use std::sync::mpsc::{channel, Sender};
 use tokio::task::JoinHandle;
@@ -134,16 +136,18 @@ pub struct CriRuntimeService {
     containers: Arc<RwLock<Vec<UserContainer>>>,
     running_containers: Arc<RwLock<HashMap<String, RuntimeContainerCancellationToken>>>,
     root_dir: PathBuf,
+    pod_cidr: Arc<RwLock<Option<IpNet>>>,
 }
 
 impl CriRuntimeService {
-    pub fn new(dir: PathBuf) -> Self {
+    pub fn new(dir: PathBuf, pod_cidr: Option<IpNet>) -> Self {
         util::ensure_root_dir(&dir).expect("cannot create root directory for runtime service");
         CriRuntimeService {
             sandboxes: Arc::new(RwLock::new(BTreeMap::default())),
             containers: Arc::new(RwLock::new(vec![])),
             running_containers: Arc::new(RwLock::new(HashMap::new())),
             root_dir: dir,
+            pod_cidr: Arc::new(RwLock::new(pod_cidr)),
         }
     }
 }
@@ -193,6 +197,37 @@ impl RuntimeService for CriRuntimeService {
             // but actually require this format, which is not SemVer at all.
             runtime_api_version: RUNTIME_API_VERSION.to_string(),
         }))
+    }
+
+    async fn update_runtime_config(
+        &self,
+        req: Request<UpdateRuntimeConfigRequest>,
+    ) -> CriResult<UpdateRuntimeConfigResponse> {
+        let raw = req
+            .into_inner()
+            .runtime_config
+            .unwrap_or_default()
+            .network_config
+            .unwrap_or_default()
+            .pod_cidr;
+        let mut pod_cidr: Option<IpNet> = None;
+        if raw != "" {
+            pod_cidr.replace(IpNet::from_str(&raw).map_err(|e| {
+                Status::invalid_argument(format!("invalid CIDR given: {}", e.to_string()))
+            })?);
+        }
+        let mut cidr = self
+            .pod_cidr
+            .write()
+            .map_err(|e| {
+                Status::internal(format!(
+                    "Data inconsistency when trying to update runtime config data: {}",
+                    e.to_string()
+                ))
+            })
+            .unwrap();
+        *cidr = pod_cidr;
+        Ok(Response::new(UpdateRuntimeConfigResponse {}))
     }
 
     async fn status(&self, req: Request<StatusRequest>) -> CriResult<StatusResponse> {
@@ -665,6 +700,8 @@ pub(crate) fn has_labels(
 mod test {
     use super::*;
     use crate::grpc::*;
+    use ipnet::{IpNet, Ipv4Net};
+    use std::net::Ipv4Addr;
     use tempfile::tempdir;
     use tonic::Request;
 
@@ -692,7 +729,7 @@ mod test {
 
     #[tokio::test]
     async fn test_version() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let res = svc.version(Request::new(VersionRequest::default())).await;
         assert_eq!(
             res.as_ref()
@@ -710,8 +747,28 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_update_runtime_config() {
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let _ = svc
+            .update_runtime_config(Request::new(UpdateRuntimeConfigRequest {
+                runtime_config: Some(RuntimeConfig {
+                    network_config: Some(NetworkConfig {
+                        pod_cidr: "192.168.1.0/24".to_owned(),
+                    }),
+                }),
+            }))
+            .await
+            .expect("successful update config request");
+        let set_cidr = svc.pod_cidr.read().unwrap().unwrap();
+        assert_eq!(
+            IpNet::from(Ipv4Net::new(Ipv4Addr::new(192, 168, 1, 0), 24).unwrap()),
+            set_cidr
+        )
+    }
+
+    #[tokio::test]
     async fn test_status() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let res = svc
             .status(Request::new(StatusRequest::default()))
             .await
@@ -758,7 +815,7 @@ mod test {
 
     #[tokio::test]
     async fn test_list_pod_sandbox() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let req = Request::new(ListPodSandboxRequest::default());
         let res = svc.list_pod_sandbox(req).await;
         assert_eq!(0, res.expect("successful pod list").get_ref().items.len());
@@ -766,7 +823,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pod_sandbox_status() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut sandboxes = svc.sandboxes.write().unwrap();
         let sandbox = PodSandbox {
             id: "1".to_owned(),
@@ -797,7 +854,7 @@ mod test {
 
     #[tokio::test]
     async fn test_remove_pod_sandbox() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut container = UserContainer::default();
         container.pod_sandbox_id = "1".to_owned();
         svc.containers.write().unwrap().push(container);
@@ -829,7 +886,7 @@ mod test {
 
     #[tokio::test]
     async fn test_stop_pod_sandbox() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut sandboxes = svc.sandboxes.write().unwrap();
         sandboxes.insert(
             "test".to_owned(),
@@ -862,7 +919,7 @@ mod test {
 
     #[tokio::test]
     async fn test_create_container() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut sandboxes = svc.sandboxes.write().unwrap();
         sandboxes.insert(
             "test".to_owned(),
@@ -902,7 +959,7 @@ mod test {
     async fn test_start_container() {
         // Put every file in a temp dir so it's automatically cleaned up
         let dir = tempdir().expect("Couldn't create temp directory");
-        let svc = CriRuntimeService::new(dir.path().to_owned());
+        let svc = CriRuntimeService::new(dir.path().to_owned(), None);
 
         let image_ref = crate::oci::ImageRef {
             whole: "foo/bar:baz",
@@ -957,7 +1014,7 @@ mod test {
 
     #[tokio::test]
     async fn test_stop_container() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let req = Request::new(StopContainerRequest::default());
         let res = svc.stop_container(req).await;
         // We expect an empty response object
@@ -966,7 +1023,7 @@ mod test {
 
     #[tokio::test]
     async fn test_remove_container() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut containers = svc.containers.write().unwrap();
         containers.push(UserContainer {
             id: "test".to_owned(),
@@ -1001,7 +1058,7 @@ mod test {
 
     #[tokio::test]
     async fn test_list_containers() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut containers = svc.containers.write().unwrap();
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
@@ -1106,7 +1163,7 @@ mod test {
 
     #[tokio::test]
     async fn test_container_status() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let req = Request::new(ContainerStatusRequest::default());
         let res = svc.container_status(req).await;
         assert_eq!(
@@ -1121,7 +1178,7 @@ mod test {
 
     #[tokio::test]
     async fn test_container_stats() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut containers = svc.containers.write().unwrap();
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
@@ -1170,7 +1227,7 @@ mod test {
 
     #[tokio::test]
     async fn test_list_container_stats() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut containers = svc.containers.write().unwrap();
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
@@ -1259,7 +1316,7 @@ mod test {
 
     #[tokio::test]
     async fn test_run_pod_sandbox() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut sandbox_req = RunPodSandboxRequest::default();
         sandbox_req.runtime_handler = RuntimeHandler::WASI.to_string();
 
@@ -1280,7 +1337,7 @@ mod test {
 
     #[tokio::test]
     async fn test_create_and_list() {
-        let svc = CriRuntimeService::new(PathBuf::from(""));
+        let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut sandbox_req = RunPodSandboxRequest::default();
         sandbox_req.runtime_handler = RuntimeHandler::WASI.to_string();
 
