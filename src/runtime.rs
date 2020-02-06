@@ -482,8 +482,10 @@ impl RuntimeService for CriRuntimeService {
 
         // validate log paths and compose full container log path.
         if sandbox_config.log_directory != "" && container.config.log_path != "" {
-            container.log_path =
-                Some(PathBuf::from(&sandbox_config.log_directory).join(&container.config.log_path));
+            let log_path =
+                PathBuf::from(&sandbox_config.log_directory).join(&container.config.log_path);
+            tokio::fs::create_dir_all(log_path.clone()).await?;
+            container.log_path = Some(log_path);
             log::debug!("composed container log path using sandbox log directory {} and container config log path {}", sandbox_config.log_directory, container.config.log_path);
         } else {
             // logging is disabled
@@ -523,9 +525,6 @@ impl RuntimeService for CriRuntimeService {
 
             (runtime, container.clone())
         };
-        // TODO: handle unset log path
-        let log_path = container.log_path.as_ref().expect("No log set");
-        tokio::fs::create_dir_all(log_path).await?;
 
         match runtime {
             RuntimeHandler::WASCC => todo!("Handle wasCC"),
@@ -554,7 +553,7 @@ impl RuntimeService for CriRuntimeService {
                     container.config.args.clone(),
                     // TODO: dirs
                     HashMap::new(),
-                    &log_path,
+                    container.log_path.as_ref(),
                 )
                 .expect("Creating runtime failed");
 
