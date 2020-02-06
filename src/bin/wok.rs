@@ -5,6 +5,7 @@ use std::fs;
 #[cfg(unix)]
 use std::path::Path;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[cfg(unix)]
 use futures::stream::TryStreamExt;
@@ -12,6 +13,7 @@ use futures::stream::TryStreamExt;
 use tokio::net::UnixListener;
 use tonic::transport::Server;
 
+use ipnet::IpNet;
 #[cfg(unix)]
 use wok::ImageServiceServer;
 use wok::{CriImageService, CriRuntimeService, RuntimeServiceServer};
@@ -43,13 +45,21 @@ struct Opts {
 
     #[clap(short = "d", long = "dir", default_value = "/tmp")]
     dir: PathBuf,
+
+    #[clap(long = "pod-cidr")]
+    pod_cidr: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let opts: Opts = Opts::parse();
-    let runtime = CriRuntimeService::new(opts.dir.clone());
+    let pod_cidr = match opts.pod_cidr {
+        Some(s) => Some(IpNet::from_str(&s)?),
+        None => None,
+    };
+    log::debug!("Using {:?} for pod CIDR", pod_cidr);
+    let runtime = CriRuntimeService::new(opts.dir.clone(), pod_cidr);
     let image_service = CriImageService::new(opts.dir.clone());
 
     let parts: Vec<&str> = opts.addr.split("://").collect();

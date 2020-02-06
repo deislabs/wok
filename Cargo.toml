@@ -27,6 +27,7 @@ uuid = { version = "0.8", features = [ "v4" ] }
 chrono = "0.4"
 dirs = "2.0"
 wascc-host = "0.1.5"
+ipnet = "2.2.0"
 
 # This is a forked version of h2 that plays nicely with gRPC by ignoring the http/2 spec.
 # Specifically, the Go implementation of gRPC allows setting illegal :authority
