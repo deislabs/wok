@@ -559,7 +559,7 @@ impl RuntimeService for CriRuntimeService {
                     .config
                     .annotations
                     .get(ACTOR_KEY_ANNOTATION)
-                    .ok_or_else(|| Status::unauthenticated("actor key is required"))?;
+                    .ok_or_else(|| Status::invalid_argument("actor key is required"))?;
                 let env: EnvVars = container
                     .config
                     .envs

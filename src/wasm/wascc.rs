@@ -110,6 +110,7 @@ mod test {
         )
         .expect("successfully executed a WASM");
 
+        // Give the webserver a chance to start up.
         std::thread::sleep(std::time::Duration::from_secs(3));
         wascc_stop("MADK3R3H47FGXN5F4HWPSJH4WCKDWKXQBBIOVI7YEPEYEMGJ2GDFIFE5")
             .expect("Removed the actor");
