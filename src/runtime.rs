@@ -4,26 +4,15 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
+use log::info;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::util;
 
 // RuntimeService is converted to a package runtime_service_server
-use crate::grpc::{
-    runtime_service_server::RuntimeService, Container, ContainerAttributes, ContainerConfig,
-    ContainerMetadata, ContainerState, ContainerStats, ContainerStatsRequest,
-    ContainerStatsResponse, ContainerStatus, ContainerStatusRequest, ContainerStatusResponse,
-    CreateContainerRequest, CreateContainerResponse, ImageSpec, ListContainerStatsRequest,
-    ListContainerStatsResponse, ListContainersRequest, ListContainersResponse,
-    ListPodSandboxRequest, ListPodSandboxResponse, Mount, PodSandbox, PodSandboxState,
-    PodSandboxStatus, PodSandboxStatusRequest, PodSandboxStatusResponse, RemoveContainerRequest,
-    RemoveContainerResponse, RemovePodSandboxRequest, RemovePodSandboxResponse,
-    RunPodSandboxRequest, RunPodSandboxResponse, RuntimeCondition, RuntimeStatus,
-    StartContainerRequest, StartContainerResponse, StatusRequest, StatusResponse,
-    StopContainerRequest, StopContainerResponse, StopPodSandboxRequest, StopPodSandboxResponse,
-    UpdateRuntimeConfigRequest, UpdateRuntimeConfigResponse, VersionRequest, VersionResponse,
-};
+use crate::grpc::{runtime_service_server::RuntimeService, *};
+use crate::wasm::wascc::*;
 use crate::wasm::Runtime;
 use ipnet::IpNet;
 use log::error;
@@ -36,6 +25,12 @@ use tokio::task::JoinHandle;
 const RUNTIME_API_VERSION: &str = "v1alpha2";
 /// The API version of this CRI plugin.
 const API_VERSION: &str = "0.1.0";
+
+/// The Actor's public key is a required annotation on a container that runs a waSCC actor.
+///
+/// The key is used to verify that the WASM that is retrieved is signed by the correct
+/// signing key.
+const ACTOR_KEY_ANNOTATION: &str = "deislabs.io/actor-key";
 
 /// CriResult describes a Result that has a Response<T> and a Status
 pub type CriResult<T> = std::result::Result<Response<T>, Status>;
@@ -134,7 +129,7 @@ pub struct CriRuntimeService {
     // NOTE: we could replace this with evmap or crossbeam
     sandboxes: Arc<RwLock<BTreeMap<String, PodSandbox>>>,
     containers: Arc<RwLock<Vec<UserContainer>>>,
-    running_containers: Arc<RwLock<HashMap<String, RuntimeContainerCancellationToken>>>,
+    running_containers: Arc<RwLock<HashMap<String, ContainerCancellationToken>>>,
     root_dir: PathBuf,
     pod_cidr: Arc<RwLock<Option<IpNet>>>,
 }
@@ -544,7 +539,40 @@ impl RuntimeService for CriRuntimeService {
         };
 
         match runtime {
-            RuntimeHandler::WASCC => todo!("Handle wasCC"),
+            RuntimeHandler::WASCC => {
+                use crate::wasm::wascc::EnvVars;
+                use std::convert::TryFrom;
+
+                // Get the actor from the image
+                // TODO: handle error
+                let image_ref = crate::oci::ImageRef::try_from(&container.image_ref)
+                    .expect("Failed to parse image_ref");
+                let module_path = image_ref
+                    .file_path(&self.root_dir)
+                    .into_os_string()
+                    .into_string()
+                    .unwrap();
+                // Load the actor
+                let wasm = std::fs::read(module_path)?;
+                // Get the key out of the request
+                let key = container
+                    .config
+                    .annotations
+                    .get(ACTOR_KEY_ANNOTATION)
+                    .ok_or_else(|| Status::unauthenticated("actor key is required"))?;
+                let env: EnvVars = container
+                    .config
+                    .envs
+                    .iter()
+                    .cloned()
+                    .map(|pair| (pair.key, pair.value))
+                    .collect();
+                wascc_run_http(wasm, env, key).map_err(|e| Status::internal(e.to_string()))?;
+                let mut running_containers = self.running_containers.write().unwrap();
+                // Fake token. Needs to be replaced with a real cancellation token, which should come from wascc.
+                let token = ContainerCancellationToken::WasccCancelationToken(key.to_string());
+                running_containers.insert(container.id, token);
+            }
             RuntimeHandler::WASI => {
                 use std::convert::TryFrom;
 
@@ -584,8 +612,12 @@ impl RuntimeService for CriRuntimeService {
 
     async fn stop_container(
         &self,
-        _req: Request<StopContainerRequest>,
+        req: Request<StopContainerRequest>,
     ) -> CriResult<StopContainerResponse> {
+        let tokens = self.running_containers.read().unwrap();
+        if let Some(token) = tokens.get(&req.into_inner().container_id) {
+            token.stop()
+        }
         Ok(Response::new(StopContainerResponse {}))
     }
 
@@ -593,9 +625,15 @@ impl RuntimeService for CriRuntimeService {
         &self,
         req: Request<RemoveContainerRequest>,
     ) -> CriResult<RemoveContainerResponse> {
+        let tokens = self.running_containers.read().unwrap();
         let id = req.into_inner().container_id;
-        // TODO(taylor): Force a container stop once we have a method for
-        // handling it
+        match tokens.get(&id) {
+            Some(token) => token.remove(),
+            None => {
+                // Documentation seems to suggest that this is not an error case.
+                log::debug!("ID {} is not found in running containers", id)
+            }
+        };
         self.containers.write().unwrap().retain(|c| c.id != id);
         Ok(Response::new(RemoveContainerResponse {}))
     }
@@ -715,7 +753,6 @@ pub(crate) fn has_labels(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::grpc::*;
     use ipnet::{IpNet, Ipv4Net};
     use std::net::Ipv4Addr;
     use tempfile::tempdir;
@@ -1457,24 +1494,51 @@ impl RuntimeContainer {
             if let Err(e) = rt.run() {
                 // TODO(taylor): Implement messaging here to indicate that there was a problem running the module
                 error!("Error while running module: {}", e);
-                todo!("Error type")
             }
             Ok(())
         });
         RuntimeContainer { handle, sender }
     }
 
-    pub fn start(self) -> RuntimeContainerCancellationToken {
+    pub fn start(self) -> ContainerCancellationToken {
         self.sender.send(()).unwrap();
-        RuntimeContainerCancellationToken(self.handle)
+        ContainerCancellationToken::WasiCancelationToken(self.handle)
     }
 }
 
-#[derive(Debug)]
-pub struct RuntimeContainerCancellationToken(JoinHandle<Result<()>>);
+type WasccPublicKey = String;
 
-impl RuntimeContainerCancellationToken {
-    pub fn stop(self) {
-        panic!("Stopping a running container is not currently supported");
+#[derive(Debug)]
+pub enum ContainerCancellationToken {
+    WasccCancelationToken(WasccPublicKey),
+    WasiCancelationToken(JoinHandle<Result<()>>),
+}
+
+impl ContainerCancellationToken {
+    fn stop(&self) {
+        match self {
+            Self::WasccCancelationToken(key) => {
+                //Remove container
+                if let Err(e) = wascc_stop(key) {
+                    info!("wascc module was not stopped: {}", e.to_string());
+                }
+            }
+            Self::WasiCancelationToken(_handle) => {
+                todo!("Stopping a running container is not currently supported");
+            }
+        }
+    }
+    fn remove(&self) {
+        match self {
+            Self::WasccCancelationToken(key) => {
+                //Remove container
+                if let Err(e) = wascc_stop(key) {
+                    info!("wascc module was not stopped: {}", e.to_string());
+                }
+            }
+            Self::WasiCancelationToken(_handle) => {
+                todo!("Removing a running container is not currently supported");
+            }
+        }
     }
 }
