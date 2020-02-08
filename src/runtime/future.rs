@@ -89,17 +89,28 @@ mod test {
     use super::*;
     use std::collections::HashMap;
 
-    const greet_file: &str = "./testdata/greet.wasm";
+    const GREET_FILE: &str = "./testdata/greet.wasm";
 
     #[tokio::test]
     async fn test_future() {
-        let wasm = std::fs::read(greet_file).expect("load echo WASM");
         let env: HashMap<String, String> = HashMap::new();
         let rt =
-            crate::wasm::WasiRuntime::new(greet_file, env, vec![], HashMap::new(), Some("/tmp"))
+            crate::wasm::WasiRuntime::new(GREET_FILE, env, vec![], HashMap::new(), Some("/tmp/"))
                 .expect("a new runtime");
 
         let fut = RuntimeFuture::new(rt);
+        fut.await.expect("No error on run");
+    }
+
+    #[tokio::test]
+    async fn test_future_output_first() {
+        let env: HashMap<String, String> = HashMap::new();
+        let rt =
+            crate::wasm::WasiRuntime::new(GREET_FILE, env, vec![], HashMap::new(), Some("/tmp/"))
+                .expect("a new runtime");
+
+        let fut = RuntimeFuture::new(rt);
+        let _out = fut.output().expect("should get output");
         fut.await.expect("No error on run");
     }
 }
