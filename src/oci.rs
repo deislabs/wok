@@ -1,11 +1,15 @@
 use crate::grpc::{
-    image_service_server::ImageService, ListImagesRequest, ListImagesResponse, PullImageRequest,
-    PullImageResponse,
+    image_service_server::ImageService, FilesystemIdentifier, FilesystemUsage, Image,
+    ImageFsInfoRequest, ImageFsInfoResponse, ListImagesRequest, ListImagesResponse,
+    PullImageRequest, PullImageResponse, UInt64Value,
 };
+use chrono::Utc;
 use std::convert::TryFrom;
 use std::ffi::CString;
-use std::path::{Path, PathBuf};
-use tonic::{Request, Response, Status};
+use std::fmt;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use tonic::{Request, Response};
 
 use crate::runtime::CriResult;
 use crate::util;
@@ -17,24 +21,132 @@ pub fn default_image_dir() -> PathBuf {
         .join("modules")
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ImageStore {
+    root_dir: PathBuf,
+    images: Arc<RwLock<Vec<Image>>>,
+}
+
+/// An error which can be returned when there was an error
+pub struct ImageStoreErr {
+    details: String,
+}
+
+impl ImageStoreErr {
+    fn new(msg: &str) -> ImageStoreErr {
+        ImageStoreErr {
+            details: msg.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for ImageStoreErr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.details)
+    }
+}
+
+impl ImageStore {
+    pub fn new(root_dir: PathBuf) -> Self {
+        // TODO(bacongobbler): populate `images` using `root_dir`
+        ImageStore {
+            root_dir: root_dir,
+            images: Arc::new(RwLock::new(vec![])),
+        }
+    }
+
+    pub fn add(&mut self, image: Image) -> Result<(), ImageStoreErr> {
+        let mut images = match self.images.write() {
+            Ok(images) => images,
+            Err(e) => {
+                return Err(ImageStoreErr::new(&format!(
+                    "Could not acquire store lock: {}",
+                    e.to_string()
+                )))
+            }
+        };
+        (*images).push(image);
+        Ok(())
+    }
+
+    pub fn get(&self, key: String) -> Option<Image> {
+        let images = self.images.read().unwrap();
+        images.iter().cloned().find(|x| x.id == key)
+    }
+
+    pub fn list(&self) -> Vec<Image> {
+        let images = self.images.read().unwrap();
+        (*images.to_owned()).to_vec()
+    }
+
+    pub fn remove(&mut self, key: String) -> Result<Image, ImageStoreErr> {
+        let mut images = match self.images.write() {
+            Ok(images) => images,
+            Err(e) => {
+                return Err(ImageStoreErr::new(&format!(
+                    "Could not acquire store lock: {}",
+                    e.to_string()
+                )))
+            }
+        };
+        for i in 0..images.len() {
+            if images[i].id == key {
+                return Ok(images.remove(i));
+            }
+        }
+        return Err(ImageStoreErr::new(&format!("key {} not found", key)));
+    }
+
+    pub(crate) fn used_bytes(&self) -> u64 {
+        let mut used: u64 = 0;
+        let images = self.images.read().unwrap();
+        for image in images.iter() {
+            used += image.size
+        }
+        used
+    }
+
+    pub(crate) fn used_inodes(&self) -> u64 {
+        let images = self.images.read().unwrap();
+        images.len() as u64
+    }
+
+    pub(crate) fn pull_path(&self, image_ref: ImageRef) -> PathBuf {
+        self.root_dir
+            .join(image_ref.registry)
+            .join(image_ref.repo)
+            .join(image_ref.tag)
+    }
+
+    pub(crate) fn pull_file_path(&self, image_ref: ImageRef) -> PathBuf {
+        self.pull_path(image_ref).join("module.wasm")
+    }
+}
+
 /// Implement a CRI Image Service
 #[derive(Debug, Default)]
 pub struct CriImageService {
-    root_dir: PathBuf,
+    image_store: ImageStore,
 }
 
 impl CriImageService {
     pub fn new(root_dir: PathBuf) -> Self {
         util::ensure_root_dir(&root_dir).expect("cannot create root directory for image service");
-        CriImageService { root_dir }
+        CriImageService {
+            image_store: ImageStore::new(root_dir),
+        }
     }
 
     fn pull_module(&self, module_ref: ImageRef) -> Result<(), failure::Error> {
-        let pull_path = module_ref.dir_path(&self.root_dir);
-
+        let pull_path = self.image_store.pull_path(module_ref);
         std::fs::create_dir_all(&pull_path)?;
-        let target_mod = module_ref.file_path(&self.root_dir);
-        pull_wasm(module_ref.whole, target_mod.to_str().unwrap())
+        pull_wasm(
+            module_ref.whole,
+            self.image_store
+                .pull_file_path(module_ref)
+                .to_str()
+                .unwrap(),
+        )
     }
 }
 
@@ -47,16 +159,6 @@ pub(crate) struct ImageRef<'a> {
     pub(crate) registry: &'a str,
     pub(crate) repo: &'a str,
     pub(crate) tag: &'a str,
-}
-
-impl<'a> ImageRef<'a> {
-    pub(crate) fn dir_path(&self, root_dir: &Path) -> PathBuf {
-        root_dir.join(self.registry).join(self.repo).join(self.tag)
-    }
-
-    pub(crate) fn file_path(&self, root_dir: &Path) -> PathBuf {
-        self.dir_path(root_dir).join("module.wasm")
-    }
 }
 
 impl<'a> TryFrom<&'a String> for ImageRef<'a> {
@@ -82,7 +184,10 @@ impl ImageService for CriImageService {
         &self,
         _request: Request<ListImagesRequest>,
     ) -> CriResult<ListImagesResponse> {
-        Err(Status::unimplemented("BOO"))
+        let resp = ListImagesResponse {
+            images: self.image_store.list(),
+        };
+        Ok(Response::new(resp))
     }
 
     async fn pull_image(&self, request: Request<PullImageRequest>) -> CriResult<PullImageResponse> {
@@ -92,6 +197,37 @@ impl ImageService for CriImageService {
             .expect("cannot pull module");
         let resp = PullImageResponse { image_ref };
 
+        // TODO(bacongobbler): add to the image store
+
+        Ok(Response::new(resp))
+    }
+
+    /// returns information of the filesystem that is used to store images.
+    async fn image_fs_info(
+        &self,
+        _request: Request<ImageFsInfoRequest>,
+    ) -> CriResult<ImageFsInfoResponse> {
+        let resp = ImageFsInfoResponse {
+            image_filesystems: vec![FilesystemUsage {
+                timestamp: Utc::now().timestamp_nanos(),
+                fs_id: Some(FilesystemIdentifier {
+                    mountpoint: self
+                        .image_store
+                        .root_dir
+                        .clone()
+                        .into_os_string()
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                }),
+                used_bytes: Some(UInt64Value {
+                    value: self.image_store.used_bytes(),
+                }),
+                inodes_used: Some(UInt64Value {
+                    value: self.image_store.used_inodes(),
+                }),
+            }],
+        };
         Ok(Response::new(resp))
     }
 }

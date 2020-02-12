@@ -12,6 +12,7 @@ use crate::util;
 
 // RuntimeService is converted to a package runtime_service_server
 use crate::grpc::{runtime_service_server::RuntimeService, *};
+use crate::oci::{ImageRef, ImageStore};
 use crate::wasm::wascc::*;
 use crate::wasm::Runtime;
 use ipnet::IpNet;
@@ -538,6 +539,8 @@ impl RuntimeService for CriRuntimeService {
             (runtime, container.clone())
         };
 
+        let image_store = ImageStore::new(self.root_dir.clone());
+
         match runtime {
             RuntimeHandler::WASCC => {
                 use crate::wasm::wascc::EnvVars;
@@ -545,10 +548,10 @@ impl RuntimeService for CriRuntimeService {
 
                 // Get the actor from the image
                 // TODO: handle error
-                let image_ref = crate::oci::ImageRef::try_from(&container.image_ref)
-                    .expect("Failed to parse image_ref");
-                let module_path = image_ref
-                    .file_path(&self.root_dir)
+                let image_ref =
+                    ImageRef::try_from(&container.image_ref).expect("Failed to parse image_ref");
+                let module_path = image_store
+                    .pull_file_path(image_ref)
                     .into_os_string()
                     .into_string()
                     .unwrap();
@@ -577,10 +580,10 @@ impl RuntimeService for CriRuntimeService {
                 use std::convert::TryFrom;
 
                 // TODO: handle error
-                let image_ref = crate::oci::ImageRef::try_from(&container.image_ref)
-                    .expect("Failed to parse image_ref");
-                let module_path = image_ref
-                    .file_path(&self.root_dir)
+                let image_ref =
+                    ImageRef::try_from(&container.image_ref).expect("Failed to parse image_ref");
+                let module_path = image_store
+                    .pull_file_path(image_ref)
                     .into_os_string()
                     .into_string()
                     .unwrap();
@@ -1082,16 +1085,18 @@ mod test {
         let dir = tempdir().expect("Couldn't create temp directory");
         let svc = CriRuntimeService::new(dir.path().to_owned(), None);
 
-        let image_ref = crate::oci::ImageRef {
+        let image_ref = ImageRef {
             whole: "foo/bar:baz",
             registry: "foo",
             repo: "bar",
             tag: "baz",
         };
 
+        let image_store = ImageStore::new(dir.path().to_path_buf());
+
         // create temp directories
         let log_dir_name = dir.path().join("testdir");
-        let image_file = image_ref.file_path(dir.path());
+        let image_file = image_store.pull_file_path(image_ref);
         // log directory
         tokio::fs::create_dir_all(&log_dir_name)
             .await
