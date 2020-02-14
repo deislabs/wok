@@ -1,6 +1,6 @@
 use std::convert::TryFrom;
 use std::path::PathBuf;
-use std::ffi::CString;
+use std::sync::Mutex;
 
 use chrono::Utc;
 use tonic::{Request, Response};
@@ -11,7 +11,6 @@ use super::grpc::{
     PullImageResponse, UInt64Value,
 };
 
-use crate::oci::{GoString, OCIError, Pull};
 use crate::reference::Reference;
 use crate::server::CriResult;
 use crate::store::ImageStore;
@@ -20,27 +19,20 @@ use crate::util;
 /// Implement a CRI Image Service
 #[derive(Debug, Default)]
 pub struct CriImageService {
-    image_store: ImageStore,
+    image_store: Mutex<ImageStore>,
 }
 
 impl CriImageService {
     pub fn new(root_dir: PathBuf) -> Self {
         util::ensure_root_dir(&root_dir).expect("cannot create root directory for image service");
         CriImageService {
-            image_store: ImageStore::new(root_dir),
+            image_store: Mutex::new(ImageStore::new(root_dir)),
         }
     }
 
     fn pull_module(&self, module_ref: Reference) -> Result<(), failure::Error> {
-        let pull_path = self.image_store.pull_path(module_ref);
-        std::fs::create_dir_all(&pull_path)?;
-        pull_wasm(
-            module_ref.whole,
-            self.image_store
-                .pull_file_path(module_ref)
-                .to_str()
-                .unwrap(),
-        )
+        self.image_store.lock().unwrap().pull(module_ref)?;
+        Ok(())
     }
 }
 
@@ -51,7 +43,7 @@ impl ImageService for CriImageService {
         _request: Request<ListImagesRequest>,
     ) -> CriResult<ListImagesResponse> {
         let resp = ListImagesResponse {
-            images: self.image_store.list(),
+            images: self.image_store.lock().unwrap().list(),
         };
         Ok(Response::new(resp))
     }
@@ -73,12 +65,12 @@ impl ImageService for CriImageService {
         &self,
         _request: Request<ImageFsInfoRequest>,
     ) -> CriResult<ImageFsInfoResponse> {
+        let image_store = self.image_store.lock().unwrap();
         let resp = ImageFsInfoResponse {
             image_filesystems: vec![FilesystemUsage {
                 timestamp: Utc::now().timestamp_nanos(),
                 fs_id: Some(FilesystemIdentifier {
-                    mountpoint: self
-                        .image_store
+                    mountpoint: image_store
                         .root_dir()
                         .clone()
                         .into_os_string()
@@ -87,44 +79,13 @@ impl ImageService for CriImageService {
                         .to_owned(),
                 }),
                 used_bytes: Some(UInt64Value {
-                    value: self.image_store.used_bytes(),
+                    value: image_store.used_bytes(),
                 }),
                 inodes_used: Some(UInt64Value {
-                    value: self.image_store.used_inodes(),
+                    value: image_store.used_inodes(),
                 }),
             }],
         };
         Ok(Response::new(resp))
     }
-}
-
-fn pull_wasm(reference: &str, file: &str) -> Result<(), failure::Error> {
-    println!("pulling {} into {}", reference, file);
-    let c_ref = CString::new(reference)?;
-    let c_file = CString::new(file)?;
-
-    let go_str_ref = GoString {
-        p: c_ref.as_ptr(),
-        n: c_ref.as_bytes().len() as isize,
-    };
-    let go_str_file = GoString {
-        p: c_file.as_ptr(),
-        n: c_file.as_bytes().len() as isize,
-    };
-
-    let result = unsafe { Pull(go_str_ref, go_str_file) };
-    match result {
-        0 => Ok(()),
-        _ => Err(failure::Error::from(OCIError::Custom(
-            "cannot pull module".into(),
-        ))),
-    }
-}
-
-#[test]
-fn test_pull_wasm() {
-    // this is a public registry, so this test is both making sure the library is working,
-    // as well as ensuring the registry is publicly accessible
-    let module = "webassembly.azurecr.io/hello-wasm:v1";
-    pull_wasm(module, "target/pulled.wasm").unwrap();
 }
