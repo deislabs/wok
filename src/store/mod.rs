@@ -97,6 +97,7 @@ impl ImageStore {
             reference.whole,
             self.pull_file_path(reference).to_str().unwrap(),
         )?;
+        // TODO(bacongobbler): fetch image information from the module
         let i = Image {
             id: reference.whole.to_owned(),
             repo_digests: vec![],
