@@ -93,7 +93,10 @@ impl ImageStore {
     pub fn pull(&mut self, reference: Reference) -> Result<(), ImageStoreErr> {
         let pull_path = self.pull_path(reference);
         std::fs::create_dir_all(&pull_path).expect("could not create pull path");
-        pull_wasm(reference.whole, self.pull_file_path(reference).to_str().unwrap())?;
+        pull_wasm(
+            reference.whole,
+            self.pull_file_path(reference).to_str().unwrap(),
+        )?;
         let i = Image {
             id: reference.whole.to_owned(),
             repo_digests: vec![],
