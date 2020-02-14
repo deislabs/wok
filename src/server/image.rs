@@ -1,5 +1,6 @@
 use std::convert::TryFrom;
 use std::path::PathBuf;
+use std::ffi::CString;
 
 use chrono::Utc;
 use tonic::{Request, Response};
@@ -10,6 +11,7 @@ use super::grpc::{
     PullImageResponse, UInt64Value,
 };
 
+use crate::oci::{GoString, OCIError, Pull};
 use crate::reference::Reference;
 use crate::server::CriResult;
 use crate::store::ImageStore;
@@ -32,7 +34,7 @@ impl CriImageService {
     fn pull_module(&self, module_ref: Reference) -> Result<(), failure::Error> {
         let pull_path = self.image_store.pull_path(module_ref);
         std::fs::create_dir_all(&pull_path)?;
-        crate::oci::pull_wasm(
+        pull_wasm(
             module_ref.whole,
             self.image_store
                 .pull_file_path(module_ref)
@@ -94,4 +96,35 @@ impl ImageService for CriImageService {
         };
         Ok(Response::new(resp))
     }
+}
+
+fn pull_wasm(reference: &str, file: &str) -> Result<(), failure::Error> {
+    println!("pulling {} into {}", reference, file);
+    let c_ref = CString::new(reference)?;
+    let c_file = CString::new(file)?;
+
+    let go_str_ref = GoString {
+        p: c_ref.as_ptr(),
+        n: c_ref.as_bytes().len() as isize,
+    };
+    let go_str_file = GoString {
+        p: c_file.as_ptr(),
+        n: c_file.as_bytes().len() as isize,
+    };
+
+    let result = unsafe { Pull(go_str_ref, go_str_file) };
+    match result {
+        0 => Ok(()),
+        _ => Err(failure::Error::from(OCIError::Custom(
+            "cannot pull module".into(),
+        ))),
+    }
+}
+
+#[test]
+fn test_pull_wasm() {
+    // this is a public registry, so this test is both making sure the library is working,
+    // as well as ensuring the registry is publicly accessible
+    let module = "webassembly.azurecr.io/hello-wasm:v1";
+    pull_wasm(module, "target/pulled.wasm").unwrap();
 }

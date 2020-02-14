@@ -1,36 +1,3 @@
-use std::ffi::CString;
-
-pub fn pull_wasm(reference: &str, file: &str) -> Result<(), failure::Error> {
-    println!("pulling {} into {}", reference, file);
-    let c_ref = CString::new(reference)?;
-    let c_file = CString::new(file)?;
-
-    let go_str_ref = GoString {
-        p: c_ref.as_ptr(),
-        n: c_ref.as_bytes().len() as isize,
-    };
-    let go_str_file = GoString {
-        p: c_file.as_ptr(),
-        n: c_file.as_bytes().len() as isize,
-    };
-
-    let result = unsafe { Pull(go_str_ref, go_str_file) };
-    match result {
-        0 => Ok(()),
-        _ => Err(failure::Error::from(OCIError::Custom(
-            "cannot pull module".into(),
-        ))),
-    }
-}
-
-#[test]
-fn test_pull_wasm() {
-    // this is a public registry, so this test is both making sure the library is working,
-    // as well as ensuring the registry is publicly accessible
-    let module = "webassembly.azurecr.io/hello-wasm:v1";
-    pull_wasm(module, "target/pulled.wasm").unwrap();
-}
-
 #[derive(Debug)]
 pub enum OCIError {
     Custom(String),
