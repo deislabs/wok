@@ -1,20 +1,14 @@
-use crate::runtime::Result;
-use log::info;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
+
+use super::{Result, Runtime};
+use log::info;
 use tempfile::NamedTempFile;
 use wasi_common::*;
 use wasmtime::*;
 use wasmtime_wasi::*;
-
-pub mod wascc;
-
-pub trait Runtime {
-    fn run(&self) -> Result<()>;
-    fn output(&self) -> Result<(BufReader<File>, BufReader<File>)>;
-}
 
 /// WasiRuntime provides a WASI compatible runtime. A runtime should be used for
 /// each "instance" of a process and can be passed to a thread pool for running

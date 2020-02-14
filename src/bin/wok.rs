@@ -15,8 +15,7 @@ use tonic::transport::Server;
 
 use ipnet::IpNet;
 #[cfg(unix)]
-use wok::ImageServiceServer;
-use wok::{CriImageService, CriRuntimeService, RuntimeServiceServer};
+use wok::server::{CriImageService, CriRuntimeService, ImageServiceServer, RuntimeServiceServer};
 
 #[derive(Debug, Clone)]
 struct BadAddr;

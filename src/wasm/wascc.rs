@@ -1,5 +1,6 @@
-use log::info;
 use std::collections::HashMap;
+
+use log::info;
 use wascc_host::{host, Actor, NativeCapability};
 
 /// The name of the HTTP capability.
