@@ -109,8 +109,8 @@ impl ImageStore {
         self.add(i)
     }
 
-    pub(crate) fn root_dir(&self) -> PathBuf {
-        self.root_dir.clone()
+    pub(crate) fn root_dir(&self) -> &PathBuf {
+        &self.root_dir
     }
 
     pub(crate) fn used_bytes(&self) -> u64 {
