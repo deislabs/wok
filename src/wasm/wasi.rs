@@ -3,12 +3,13 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-use super::{Result, Runtime};
 use log::info;
 use tempfile::NamedTempFile;
 use wasi_common::*;
 use wasmtime::*;
 use wasmtime_wasi::*;
+
+use super::Runtime;
 
 /// WasiRuntime provides a WASI compatible runtime. A runtime should be used for
 /// each "instance" of a process and can be passed to a thread pool for running
@@ -30,7 +31,7 @@ pub struct WasiRuntime {
 }
 
 impl Runtime for WasiRuntime {
-    fn run(&self) -> Result<()> {
+    fn run(&self) -> super::Result<()> {
         let engine = HostRef::new(Engine::default());
         let store = Store::new(&engine);
 
@@ -80,7 +81,7 @@ impl Runtime for WasiRuntime {
                     )
                 }
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<super::Result<Vec<_>>>()?;
 
         info!("starting run of module");
         let _instance = Instance::new(&store, &module, &imports)
@@ -95,7 +96,7 @@ impl Runtime for WasiRuntime {
     // TODO(taylor): I can't completely tell from documentation, but we may
     // need to switch this out from a BufReader if it can't handle streaming
     // logs
-    fn output(&self) -> Result<(BufReader<File>, BufReader<File>)> {
+    fn output(&self) -> super::Result<(BufReader<File>, BufReader<File>)> {
         // As warned in the BufReader docs, creating multiple BufReaders on the
         // same stream can cause data loss. So reopen a new file object each
         // time this function as called so as to not drop any data
@@ -132,7 +133,7 @@ impl WasiRuntime {
         args: Vec<String>,
         dirs: HashMap<String, Option<String>>,
         log_file_location: Option<L>,
-    ) -> Result<Self> {
+    ) -> super::Result<Self> {
         let module_data = std::fs::read(module_path)?;
 
         // We need to use named temp file because we need multiple file handles
