@@ -54,7 +54,7 @@ impl ImageStore {
             Err(e) => {
                 return Err(ImageStoreErr::new(&format!(
                     "Could not acquire store lock: {}",
-                    e.to_string()
+                    e
                 )))
             }
         };
