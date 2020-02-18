@@ -44,7 +44,10 @@ impl grpc::image_service_server::ImageService for CriImageService {
         Ok(Response::new(resp))
     }
 
-    async fn pull_image(&self, request: Request<grpc::PullImageRequest>) -> CriResult<grpc::PullImageResponse> {
+    async fn pull_image(
+        &self,
+        request: Request<grpc::PullImageRequest>,
+    ) -> CriResult<grpc::PullImageResponse> {
         let image_ref = request.into_inner().image.unwrap().image;
 
         self.pull_module(Reference::try_from(&image_ref).expect("Image ref is malformed"))

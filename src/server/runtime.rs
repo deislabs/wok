@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::Utc;
 use ipnet::IpNet;
@@ -124,11 +124,11 @@ impl From<PodSandbox> for PodSandboxStatus {
 /// Implement a CRI runtime service.
 #[derive(Debug, Default)]
 pub struct CriRuntimeService {
+    image_store: Mutex<ImageStore>,
     // NOTE: we could replace this with evmap or crossbeam
     sandboxes: Arc<RwLock<BTreeMap<String, PodSandbox>>>,
     containers: Arc<RwLock<Vec<UserContainer>>>,
     running_containers: Arc<RwLock<HashMap<String, ContainerCancellationToken>>>,
-    root_dir: PathBuf,
     pod_cidr: Arc<RwLock<Option<IpNet>>>,
 }
 
@@ -136,10 +136,10 @@ impl CriRuntimeService {
     pub fn new(dir: PathBuf, pod_cidr: Option<IpNet>) -> Self {
         util::ensure_root_dir(&dir).expect("cannot create root directory for runtime service");
         CriRuntimeService {
+            image_store: Mutex::new(ImageStore::new(dir)),
             sandboxes: Arc::new(RwLock::new(BTreeMap::default())),
             containers: Arc::new(RwLock::new(vec![])),
             running_containers: Arc::new(RwLock::new(HashMap::new())),
-            root_dir: dir,
             pod_cidr: Arc::new(RwLock::new(pod_cidr)),
         }
     }
@@ -471,7 +471,13 @@ impl RuntimeService for CriRuntimeService {
         };
 
         // create container root directory.
-        let container_root_dir = self.root_dir.join("containers").join(&id);
+        let container_root_dir = self
+            .image_store
+            .lock()
+            .unwrap()
+            .root_dir()
+            .join("containers")
+            .join(&id);
         std::fs::create_dir_all(&container_root_dir)?;
 
         // generate volume mounts.
@@ -536,7 +542,7 @@ impl RuntimeService for CriRuntimeService {
             (runtime, container.clone())
         };
 
-        let image_store = ImageStore::new(self.root_dir.clone());
+        let image_store = self.image_store.lock().unwrap();
 
         match runtime {
             RuntimeHandler::WASCC => {
