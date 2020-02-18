@@ -99,7 +99,7 @@ impl ImageStore {
         )?;
         // TODO(bacongobbler): fetch image information from the module
         let i = Image {
-            id: reference.whole.to_owned(),
+            id: String::from(reference.whole),
             repo_digests: vec![],
             repo_tags: vec![],
             size: 0,
