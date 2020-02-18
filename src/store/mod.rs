@@ -114,12 +114,8 @@ impl ImageStore {
     }
 
     pub(crate) fn used_bytes(&self) -> u64 {
-        let mut used: u64 = 0;
         let images = self.images.read().unwrap();
-        for image in images.iter() {
-            used += image.size
-        }
-        used
+        images.iter().map(|i| i.size).sum()
     }
 
     pub(crate) fn used_inodes(&self) -> u64 {
