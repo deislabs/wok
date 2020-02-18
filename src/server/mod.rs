@@ -8,7 +8,7 @@ pub mod grpc {
 
 pub use grpc::image_service_server::ImageServiceServer;
 pub use grpc::runtime_service_server::RuntimeServiceServer;
-pub use grpc::Image;
+pub use grpc::Image as Module;
 
 pub use image::CriImageService;
 pub use runtime::{CriResult, CriRuntimeService};
