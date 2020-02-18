@@ -58,7 +58,7 @@ impl ImageStore {
                 )))
             }
         };
-        (*images).push(image);
+        images.push(image);
         Ok(())
     }
 
