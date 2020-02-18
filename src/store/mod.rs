@@ -3,8 +3,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use crate::docker::Reference;
 use crate::oci::{GoString, Pull};
-use crate::docker::ImageReference;
 use crate::server::Image;
 
 #[derive(Clone, Debug, Default)]
@@ -85,13 +85,10 @@ impl ImageStore {
         return Err(ImageStoreErr::new(&format!("key {} not found", key)));
     }
 
-    pub fn pull(&mut self, reference: ImageReference) -> Result<(), ImageStoreErr> {
+    pub fn pull(&mut self, reference: Reference) -> Result<(), ImageStoreErr> {
         let pull_path = self.pull_path(reference);
         std::fs::create_dir_all(&pull_path).expect("could not create pull path");
-        pull_wasm(
-            reference,
-            self.pull_file_path(reference),
-        )?;
+        pull_wasm(reference, self.pull_file_path(reference))?;
         // TODO(bacongobbler): fetch image information from the module
         let i = Image {
             id: String::from(reference.whole),
@@ -118,19 +115,19 @@ impl ImageStore {
         images.len() as u64
     }
 
-    pub(crate) fn pull_path(&self, image_ref: ImageReference) -> PathBuf {
+    pub(crate) fn pull_path(&self, image_ref: Reference) -> PathBuf {
         self.root_dir
             .join(image_ref.registry)
             .join(image_ref.repo)
             .join(image_ref.tag)
     }
 
-    pub(crate) fn pull_file_path(&self, image_ref: ImageReference) -> PathBuf {
+    pub(crate) fn pull_file_path(&self, image_ref: Reference) -> PathBuf {
         self.pull_path(image_ref).join("module.wasm")
     }
 }
 
-fn pull_wasm(reference: ImageReference, fp: PathBuf) -> Result<(), ImageStoreErr> {
+fn pull_wasm(reference: Reference, fp: PathBuf) -> Result<(), ImageStoreErr> {
     println!("pulling {} into {}", reference.whole, fp.to_str().unwrap());
     let c_ref = CString::new(reference.whole).expect("CString::new failed");
     let c_file = CString::new(fp.to_str().unwrap()).expect("CString::new failed");
@@ -158,6 +155,6 @@ fn test_pull_wasm() {
     // this is a public registry, so this test is both making sure the library is working,
     // as well as ensuring the registry is publicly accessible
     let module = "webassembly.azurecr.io/hello-wasm:v1".to_owned();
-    let image_ref = ImageReference::try_from(&module).expect("Failed to parse image_ref");
+    let image_ref = Reference::try_from(&module).expect("Failed to parse image_ref");
     pull_wasm(image_ref, PathBuf::from("target/pulled.wasm")).unwrap();
 }

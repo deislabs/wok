@@ -1,3 +1,3 @@
-mod image_reference;
+mod reference;
 
-pub use image_reference::ImageReference;
+pub use reference::Reference;
