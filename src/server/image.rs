@@ -5,11 +5,7 @@ use std::sync::Mutex;
 use chrono::Utc;
 use tonic::{Request, Response};
 
-use super::grpc::{
-    image_service_server::ImageService, FilesystemIdentifier, FilesystemUsage, ImageFsInfoRequest,
-    ImageFsInfoResponse, ListImagesRequest, ListImagesResponse, PullImageRequest,
-    PullImageResponse, UInt64Value,
-};
+use super::grpc;
 
 use crate::reference::Reference;
 use crate::server::CriResult;
@@ -37,23 +33,23 @@ impl CriImageService {
 }
 
 #[tonic::async_trait]
-impl ImageService for CriImageService {
+impl grpc::image_service_server::ImageService for CriImageService {
     async fn list_images(
         &self,
-        _request: Request<ListImagesRequest>,
-    ) -> CriResult<ListImagesResponse> {
-        let resp = ListImagesResponse {
+        _request: Request<grpc::ListImagesRequest>,
+    ) -> CriResult<grpc::ListImagesResponse> {
+        let resp = grpc::ListImagesResponse {
             images: self.image_store.lock().unwrap().list(),
         };
         Ok(Response::new(resp))
     }
 
-    async fn pull_image(&self, request: Request<PullImageRequest>) -> CriResult<PullImageResponse> {
+    async fn pull_image(&self, request: Request<grpc::PullImageRequest>) -> CriResult<grpc::PullImageResponse> {
         let image_ref = request.into_inner().image.unwrap().image;
 
         self.pull_module(Reference::try_from(&image_ref).expect("Image ref is malformed"))
             .expect("cannot pull module");
-        let resp = PullImageResponse { image_ref };
+        let resp = grpc::PullImageResponse { image_ref };
 
         // TODO(bacongobbler): add to the image store
 
@@ -63,13 +59,13 @@ impl ImageService for CriImageService {
     /// returns information of the filesystem that is used to store images.
     async fn image_fs_info(
         &self,
-        _request: Request<ImageFsInfoRequest>,
-    ) -> CriResult<ImageFsInfoResponse> {
+        _request: Request<grpc::ImageFsInfoRequest>,
+    ) -> CriResult<grpc::ImageFsInfoResponse> {
         let image_store = self.image_store.lock().unwrap();
-        let resp = ImageFsInfoResponse {
-            image_filesystems: vec![FilesystemUsage {
+        let resp = grpc::ImageFsInfoResponse {
+            image_filesystems: vec![grpc::FilesystemUsage {
                 timestamp: Utc::now().timestamp_nanos(),
-                fs_id: Some(FilesystemIdentifier {
+                fs_id: Some(grpc::FilesystemIdentifier {
                     mountpoint: image_store
                         .root_dir()
                         .clone()
@@ -78,10 +74,10 @@ impl ImageService for CriImageService {
                         .unwrap()
                         .to_owned(),
                 }),
-                used_bytes: Some(UInt64Value {
+                used_bytes: Some(grpc::UInt64Value {
                     value: image_store.used_bytes(),
                 }),
-                inodes_used: Some(UInt64Value {
+                inodes_used: Some(grpc::UInt64Value {
                     value: image_store.used_inodes(),
                 }),
             }],
