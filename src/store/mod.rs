@@ -74,18 +74,9 @@ impl ImageStore {
     }
 
     pub fn remove(&mut self, key: String) -> Result<Image, ImageStoreError> {
-        let mut images = match self.images.write() {
-            Ok(images) => images,
-            Err(e) => {
-                return Err(ImageStoreError::LockNotAcquired)
-            }
-        };
-        for i in 0..images.len() {
-            if images[i].id == key {
-                return Ok(images.remove(i));
-            }
-        }
-        return Err(ImageStoreError::NotFound);
+        let mut images = self.images.write().or(Err(ImageStoreError::LockNotAcquired))?;
+        let i = images.iter().position(|i| i.id == key).ok_or_else(|| ImageStoreError::NotFound)?;
+        Ok(images.remove(i))
     }
 
     pub fn pull(&mut self, reference: Reference) -> Result<(), ImageStoreError> {
