@@ -62,11 +62,6 @@ impl ImageStore {
         Ok(())
     }
 
-    pub fn get(&self, key: String) -> Option<Image> {
-        let images = self.images.read().unwrap();
-        images.iter().cloned().find(|x| x.id == key)
-    }
-
     pub fn list(&self) -> Vec<Image> {
         let images = self.images.read().unwrap();
         (*images.clone()).to_vec()
