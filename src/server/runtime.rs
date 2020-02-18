@@ -1,23 +1,24 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
+use std::sync::mpsc::{channel, Sender};
+use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::Utc;
+use ipnet::IpNet;
+use log::error;
 use log::info;
+use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
-use crate::util;
-
 // RuntimeService is converted to a package runtime_service_server
-use crate::grpc::{runtime_service_server::RuntimeService, *};
+use super::grpc::{runtime_service_server::RuntimeService, *};
+use crate::docker::Reference;
+use crate::store::ImageStore;
+use crate::util;
 use crate::wasm::wascc::*;
-use crate::wasm::Runtime;
-use ipnet::IpNet;
-use log::error;
-use std::sync::mpsc::{channel, Sender};
-use tokio::task::JoinHandle;
+use crate::wasm::{Result, Runtime};
 
 /// The version of the runtime API that this tool knows.
 /// See CRI-O for reference (since docs don't explain this)
@@ -34,9 +35,6 @@ const ACTOR_KEY_ANNOTATION: &str = "deislabs.io/actor-key";
 
 /// CriResult describes a Result that has a Response<T> and a Status
 pub type CriResult<T> = std::result::Result<Response<T>, Status>;
-
-/// Result describes a Runtime result that may return a failure::Error if things go wrong.
-pub type Result<T> = std::result::Result<T, failure::Error>;
 
 /// UserContainer is an internal mapping between the Container and the ContainerConfig objects provided by the kubelet.
 /// We use this to map between what the CRI requested and what we created. (e.g. the volume mount mappings between
@@ -126,11 +124,11 @@ impl From<PodSandbox> for PodSandboxStatus {
 /// Implement a CRI runtime service.
 #[derive(Debug, Default)]
 pub struct CriRuntimeService {
+    image_store: Mutex<ImageStore>,
     // NOTE: we could replace this with evmap or crossbeam
     sandboxes: Arc<RwLock<BTreeMap<String, PodSandbox>>>,
     containers: Arc<RwLock<Vec<UserContainer>>>,
     running_containers: Arc<RwLock<HashMap<String, ContainerCancellationToken>>>,
-    root_dir: PathBuf,
     pod_cidr: Arc<RwLock<Option<IpNet>>>,
 }
 
@@ -138,10 +136,10 @@ impl CriRuntimeService {
     pub fn new(dir: PathBuf, pod_cidr: Option<IpNet>) -> Self {
         util::ensure_root_dir(&dir).expect("cannot create root directory for runtime service");
         CriRuntimeService {
+            image_store: Mutex::new(ImageStore::new(dir)),
             sandboxes: Arc::new(RwLock::new(BTreeMap::default())),
             containers: Arc::new(RwLock::new(vec![])),
             running_containers: Arc::new(RwLock::new(HashMap::new())),
-            root_dir: dir,
             pod_cidr: Arc::new(RwLock::new(pod_cidr)),
         }
     }
@@ -473,7 +471,13 @@ impl RuntimeService for CriRuntimeService {
         };
 
         // create container root directory.
-        let container_root_dir = self.root_dir.join("containers").join(&id);
+        let container_root_dir = self
+            .image_store
+            .lock()
+            .unwrap()
+            .root_dir()
+            .join("containers")
+            .join(&id);
         std::fs::create_dir_all(&container_root_dir)?;
 
         // generate volume mounts.
@@ -538,6 +542,8 @@ impl RuntimeService for CriRuntimeService {
             (runtime, container.clone())
         };
 
+        let image_store = self.image_store.lock().unwrap();
+
         match runtime {
             RuntimeHandler::WASCC => {
                 use crate::wasm::wascc::EnvVars;
@@ -545,10 +551,10 @@ impl RuntimeService for CriRuntimeService {
 
                 // Get the actor from the image
                 // TODO: handle error
-                let image_ref = crate::oci::ImageRef::try_from(&container.image_ref)
-                    .expect("Failed to parse image_ref");
-                let module_path = image_ref
-                    .file_path(&self.root_dir)
+                let image_ref =
+                    Reference::try_from(&container.image_ref).expect("Failed to parse image_ref");
+                let module_path = image_store
+                    .pull_file_path(image_ref)
                     .into_os_string()
                     .into_string()
                     .unwrap();
@@ -577,10 +583,10 @@ impl RuntimeService for CriRuntimeService {
                 use std::convert::TryFrom;
 
                 // TODO: handle error
-                let image_ref = crate::oci::ImageRef::try_from(&container.image_ref)
-                    .expect("Failed to parse image_ref");
-                let module_path = image_ref
-                    .file_path(&self.root_dir)
+                let image_ref =
+                    Reference::try_from(&container.image_ref).expect("Failed to parse image_ref");
+                let module_path = image_store
+                    .pull_file_path(image_ref)
                     .into_os_string()
                     .into_string()
                     .unwrap();
@@ -1082,16 +1088,18 @@ mod test {
         let dir = tempdir().expect("Couldn't create temp directory");
         let svc = CriRuntimeService::new(dir.path().to_owned(), None);
 
-        let image_ref = crate::oci::ImageRef {
+        let image_ref = Reference {
             whole: "foo/bar:baz",
             registry: "foo",
             repo: "bar",
             tag: "baz",
         };
 
+        let image_store = ImageStore::new(dir.path().to_path_buf());
+
         // create temp directories
         let log_dir_name = dir.path().join("testdir");
-        let image_file = image_ref.file_path(dir.path());
+        let image_file = image_store.pull_file_path(image_ref);
         // log directory
         tokio::fs::create_dir_all(&log_dir_name)
             .await

@@ -9,8 +9,7 @@ import (
 
 //export Pull
 func Pull(ref, outFile string) int64 {
-	err := oci.Pull(ref, outFile)
-	if err != nil {
+	if err := oci.Pull(ref, outFile); err != nil {
 		log.Infof("cannot pull module: %v", err)
 		return 1
 	}
