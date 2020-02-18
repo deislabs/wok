@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::oci::{GoString, Pull};
-use crate::reference::Reference;
+use crate::docker::ImageReference;
 use crate::server::Image;
 
 #[derive(Clone, Debug, Default)]
@@ -85,12 +85,12 @@ impl ImageStore {
         return Err(ImageStoreErr::new(&format!("key {} not found", key)));
     }
 
-    pub fn pull(&mut self, reference: Reference) -> Result<(), ImageStoreErr> {
+    pub fn pull(&mut self, reference: ImageReference) -> Result<(), ImageStoreErr> {
         let pull_path = self.pull_path(reference);
         std::fs::create_dir_all(&pull_path).expect("could not create pull path");
         pull_wasm(
-            reference.whole,
-            self.pull_file_path(reference).to_str().unwrap(),
+            reference,
+            self.pull_file_path(reference),
         )?;
         // TODO(bacongobbler): fetch image information from the module
         let i = Image {
@@ -118,22 +118,22 @@ impl ImageStore {
         images.len() as u64
     }
 
-    pub(crate) fn pull_path(&self, image_ref: Reference) -> PathBuf {
+    pub(crate) fn pull_path(&self, image_ref: ImageReference) -> PathBuf {
         self.root_dir
             .join(image_ref.registry)
             .join(image_ref.repo)
             .join(image_ref.tag)
     }
 
-    pub(crate) fn pull_file_path(&self, image_ref: Reference) -> PathBuf {
+    pub(crate) fn pull_file_path(&self, image_ref: ImageReference) -> PathBuf {
         self.pull_path(image_ref).join("module.wasm")
     }
 }
 
-fn pull_wasm(reference: &str, file: &str) -> Result<(), ImageStoreErr> {
-    println!("pulling {} into {}", reference, file);
-    let c_ref = CString::new(reference).expect("CString::new failed");
-    let c_file = CString::new(file).expect("CString::new failed");
+fn pull_wasm(reference: ImageReference, fp: PathBuf) -> Result<(), ImageStoreErr> {
+    println!("pulling {} into {}", reference.whole, fp.to_str().unwrap());
+    let c_ref = CString::new(reference.whole).expect("CString::new failed");
+    let c_file = CString::new(fp.to_str().unwrap()).expect("CString::new failed");
 
     let go_str_ref = GoString {
         p: c_ref.as_ptr(),
@@ -153,8 +153,11 @@ fn pull_wasm(reference: &str, file: &str) -> Result<(), ImageStoreErr> {
 
 #[test]
 fn test_pull_wasm() {
+    use std::convert::TryFrom;
+
     // this is a public registry, so this test is both making sure the library is working,
     // as well as ensuring the registry is publicly accessible
-    let module = "webassembly.azurecr.io/hello-wasm:v1";
-    pull_wasm(module, "target/pulled.wasm").unwrap();
+    let module = "webassembly.azurecr.io/hello-wasm:v1".to_owned();
+    let image_ref = ImageReference::try_from(&module).expect("Failed to parse image_ref");
+    pull_wasm(image_ref, PathBuf::from("target/pulled.wasm")).unwrap();
 }

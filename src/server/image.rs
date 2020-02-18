@@ -7,7 +7,7 @@ use tonic::{Request, Response};
 
 use super::grpc;
 
-use crate::reference::Reference;
+use crate::docker::ImageReference;
 use crate::server::CriResult;
 use crate::store::ImageStore;
 use crate::util;
@@ -26,7 +26,7 @@ impl CriImageService {
         }
     }
 
-    fn pull_module(&self, module_ref: Reference) -> Result<(), failure::Error> {
+    fn pull_module(&self, module_ref: ImageReference) -> Result<(), failure::Error> {
         self.image_store.lock().unwrap().pull(module_ref)?;
         Ok(())
     }
@@ -50,7 +50,7 @@ impl grpc::image_service_server::ImageService for CriImageService {
     ) -> CriResult<grpc::PullImageResponse> {
         let image_ref = request.into_inner().image.unwrap().image;
 
-        self.pull_module(Reference::try_from(&image_ref).expect("Image ref is malformed"))
+        self.pull_module(ImageReference::try_from(&image_ref).expect("Image ref is malformed"))
             .expect("cannot pull module");
         let resp = grpc::PullImageResponse { image_ref };
 

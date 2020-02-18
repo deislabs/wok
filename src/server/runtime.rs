@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 // RuntimeService is converted to a package runtime_service_server
 use super::grpc::{runtime_service_server::RuntimeService, *};
-use crate::reference::Reference;
+use crate::docker::ImageReference;
 use crate::store::ImageStore;
 use crate::util;
 use crate::wasm::wascc::*;
@@ -552,7 +552,7 @@ impl RuntimeService for CriRuntimeService {
                 // Get the actor from the image
                 // TODO: handle error
                 let image_ref =
-                    Reference::try_from(&container.image_ref).expect("Failed to parse image_ref");
+                    ImageReference::try_from(&container.image_ref).expect("Failed to parse image_ref");
                 let module_path = image_store
                     .pull_file_path(image_ref)
                     .into_os_string()
@@ -584,7 +584,7 @@ impl RuntimeService for CriRuntimeService {
 
                 // TODO: handle error
                 let image_ref =
-                    Reference::try_from(&container.image_ref).expect("Failed to parse image_ref");
+                    ImageReference::try_from(&container.image_ref).expect("Failed to parse image_ref");
                 let module_path = image_store
                     .pull_file_path(image_ref)
                     .into_os_string()
@@ -1088,7 +1088,7 @@ mod test {
         let dir = tempdir().expect("Couldn't create temp directory");
         let svc = CriRuntimeService::new(dir.path().to_owned(), None);
 
-        let image_ref = Reference {
+        let image_ref = ImageReference {
             whole: "foo/bar:baz",
             registry: "foo",
             repo: "bar",
