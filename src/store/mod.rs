@@ -69,7 +69,7 @@ impl ImageStore {
 
     pub fn list(&self) -> Vec<Image> {
         let images = self.images.read().unwrap();
-        (*images.to_owned()).to_vec()
+        (*images.clone()).to_vec()
     }
 
     pub fn remove(&mut self, key: String) -> Result<Image, ImageStoreErr> {
