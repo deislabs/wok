@@ -58,24 +58,31 @@ impl ImageStore {
     }
 
     pub fn add(&mut self, image: Image) -> Result<(), ImageStoreError> {
-        let mut images = match self.images.write() {
-            Ok(images) => images,
-            Err(_) => {
-                return Err(ImageStoreError::LockNotAcquired)
-            }
-        };
+        let mut images = self
+            .images
+            .write()
+            .or(Err(ImageStoreError::LockNotAcquired))?;
         images.push(image);
         Ok(())
     }
 
-    pub fn list(&self) -> Vec<Image> {
-        let images = self.images.read().unwrap();
-        (*images.clone()).to_vec()
+    pub fn list(&self) -> Result<Vec<Image>, ImageStoreError> {
+        let images = self
+            .images
+            .read()
+            .or(Err(ImageStoreError::LockNotAcquired))?;
+        Ok((*images.clone()).to_vec())
     }
 
     pub fn remove(&mut self, key: String) -> Result<Image, ImageStoreError> {
-        let mut images = self.images.write().or(Err(ImageStoreError::LockNotAcquired))?;
-        let i = images.iter().position(|i| i.id == key).ok_or_else(|| ImageStoreError::NotFound)?;
+        let mut images = self
+            .images
+            .write()
+            .or(Err(ImageStoreError::LockNotAcquired))?;
+        let i = images
+            .iter()
+            .position(|i| i.id == key)
+            .ok_or_else(|| ImageStoreError::NotFound)?;
         Ok(images.remove(i))
     }
 
@@ -99,14 +106,20 @@ impl ImageStore {
         &self.root_dir
     }
 
-    pub(crate) fn used_bytes(&self) -> u64 {
-        let images = self.images.read().unwrap();
-        images.iter().map(|i| i.size).sum()
+    pub(crate) fn used_bytes(&self) -> Result<u64, ImageStoreError> {
+        let images = self
+            .images
+            .read()
+            .or(Err(ImageStoreError::LockNotAcquired))?;
+        Ok(images.iter().map(|i| i.size).sum())
     }
 
-    pub(crate) fn used_inodes(&self) -> u64 {
-        let images = self.images.read().unwrap();
-        images.len() as u64
+    pub(crate) fn used_inodes(&self) -> Result<u64, ImageStoreError> {
+        let images = self
+            .images
+            .read()
+            .or(Err(ImageStoreError::LockNotAcquired))?;
+        Ok(images.len() as u64)
     }
 
     pub(crate) fn pull_path(&self, image_ref: Reference) -> PathBuf {
@@ -122,9 +135,12 @@ impl ImageStore {
 }
 
 fn pull_wasm(reference: Reference, fp: PathBuf) -> Result<(), ImageStoreError> {
-    println!("pulling {} into {}", reference.whole, fp.to_str().unwrap());
+    let filepath = fp
+        .to_str()
+        .ok_or_else(|| ImageStoreError::InvalidPullPath)?;
+    println!("pulling {} into {}", reference.whole, filepath);
     let c_ref = CString::new(reference.whole).or(Err(ImageStoreError::InvalidReference))?;
-    let c_file = CString::new(fp.to_str().unwrap()).or(Err(ImageStoreError::InvalidPullPath))?;
+    let c_file = CString::new(filepath).or(Err(ImageStoreError::InvalidPullPath))?;
 
     let go_str_ref = GoString {
         p: c_ref.as_ptr(),
