@@ -70,9 +70,8 @@ impl grpc::image_service_server::ImageService for CriImageService {
                         .root_dir()
                         .clone()
                         .into_os_string()
-                        .to_str()
-                        .unwrap()
-                        .to_owned(),
+                        .into_string()
+                        .unwrap(),
                 }),
                 used_bytes: Some(grpc::UInt64Value {
                     value: image_store.used_bytes(),
