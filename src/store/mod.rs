@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::ffi::CString;
 use std::fmt;
 use std::path::PathBuf;
@@ -15,27 +16,35 @@ pub struct ImageStore {
 
 /// An error which can be returned when there was an error
 #[derive(Debug)]
-pub struct ImageStoreErr {
-    details: String,
+pub enum ImageStoreError {
+    CannotPullModule,
+    InvalidPullPath,
+    InvalidReference,
+    LockNotAcquired,
+    NotFound,
 }
 
-impl ImageStoreErr {
-    fn new(msg: &str) -> ImageStoreErr {
-        ImageStoreErr {
-            details: msg.to_string(),
+impl fmt::Display for ImageStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            ImageStoreError::CannotPullModule => f.write_str("cannot pull module"),
+            ImageStoreError::InvalidPullPath => f.write_str("invalid pull path"),
+            ImageStoreError::InvalidReference => f.write_str("invalid reference"),
+            ImageStoreError::LockNotAcquired => f.write_str("cannot acquire lock on store"),
+            ImageStoreError::NotFound => f.write_str("image not found"),
         }
     }
 }
 
-impl fmt::Display for ImageStoreErr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.details)
-    }
-}
-
-impl std::error::Error for ImageStoreErr {
-    fn cause(&self) -> Option<&dyn std::error::Error> {
-        Some(self)
+impl Error for ImageStoreError {
+    fn description(&self) -> &str {
+        match *self {
+            ImageStoreError::CannotPullModule => "Cannot pull module",
+            ImageStoreError::InvalidPullPath => "Invalid pull path",
+            ImageStoreError::InvalidReference => "Invalid reference",
+            ImageStoreError::LockNotAcquired => "Cannot acquire lock on store",
+            ImageStoreError::NotFound => "Image not found",
+        }
     }
 }
 
@@ -48,14 +57,11 @@ impl ImageStore {
         }
     }
 
-    pub fn add(&mut self, image: Image) -> Result<(), ImageStoreErr> {
+    pub fn add(&mut self, image: Image) -> Result<(), ImageStoreError> {
         let mut images = match self.images.write() {
             Ok(images) => images,
-            Err(e) => {
-                return Err(ImageStoreErr::new(&format!(
-                    "Could not acquire store lock: {}",
-                    e
-                )))
+            Err(_) => {
+                return Err(ImageStoreError::LockNotAcquired)
             }
         };
         images.push(image);
@@ -67,14 +73,11 @@ impl ImageStore {
         (*images.clone()).to_vec()
     }
 
-    pub fn remove(&mut self, key: String) -> Result<Image, ImageStoreErr> {
+    pub fn remove(&mut self, key: String) -> Result<Image, ImageStoreError> {
         let mut images = match self.images.write() {
             Ok(images) => images,
             Err(e) => {
-                return Err(ImageStoreErr::new(&format!(
-                    "Could not acquire store lock: {}",
-                    e.to_string()
-                )))
+                return Err(ImageStoreError::LockNotAcquired)
             }
         };
         for i in 0..images.len() {
@@ -82,10 +85,10 @@ impl ImageStore {
                 return Ok(images.remove(i));
             }
         }
-        return Err(ImageStoreErr::new(&format!("key {} not found", key)));
+        return Err(ImageStoreError::NotFound);
     }
 
-    pub fn pull(&mut self, reference: Reference) -> Result<(), ImageStoreErr> {
+    pub fn pull(&mut self, reference: Reference) -> Result<(), ImageStoreError> {
         let pull_path = self.pull_path(reference);
         std::fs::create_dir_all(&pull_path).expect("could not create pull path");
         pull_wasm(reference, self.pull_file_path(reference))?;
@@ -127,10 +130,10 @@ impl ImageStore {
     }
 }
 
-fn pull_wasm(reference: Reference, fp: PathBuf) -> Result<(), ImageStoreErr> {
+fn pull_wasm(reference: Reference, fp: PathBuf) -> Result<(), ImageStoreError> {
     println!("pulling {} into {}", reference.whole, fp.to_str().unwrap());
-    let c_ref = CString::new(reference.whole).expect("CString::new failed");
-    let c_file = CString::new(fp.to_str().unwrap()).expect("CString::new failed");
+    let c_ref = CString::new(reference.whole).or(Err(ImageStoreError::InvalidReference))?;
+    let c_file = CString::new(fp.to_str().unwrap()).or(Err(ImageStoreError::InvalidPullPath))?;
 
     let go_str_ref = GoString {
         p: c_ref.as_ptr(),
@@ -144,7 +147,7 @@ fn pull_wasm(reference: Reference, fp: PathBuf) -> Result<(), ImageStoreErr> {
     let result = unsafe { Pull(go_str_ref, go_str_file) };
     match result {
         0 => Ok(()),
-        _ => Err(ImageStoreErr::new("cannot pull module")),
+        _ => Err(ImageStoreError::CannotPullModule),
     }
 }
 
