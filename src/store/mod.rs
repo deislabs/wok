@@ -57,7 +57,7 @@ impl ModuleStore {
         }
     }
 
-    pub fn add(&mut self, module: Module) -> Result<(), ImageStoreError> {
+    pub fn add(&mut self, module: Module) -> Result<(), ModuleSoreError> {
         let mut modules = self
             .modules
             .write()
@@ -66,7 +66,7 @@ impl ModuleStore {
         Ok(())
     }
 
-    pub fn list(&self) -> Result<Vec<Image>, ImageStoreError> {
+    pub fn list(&self) -> Result<Vec<Image>, ModuleStoreError> {
         let modules = self
             .modules
             .read()
@@ -74,7 +74,7 @@ impl ModuleStore {
         Ok(modules.clone())
     }
 
-    pub fn remove(&mut self, key: String) -> Result<Image, ImageStoreError> {
+    pub fn remove(&mut self, key: String) -> Result<Image, ModuleStoreError> {
         let mut modules = self.modules.write().or(Err(ModuleStoreError::LockNotAcquired))?;
         let i = modules.iter().position(|i| i.id == key).ok_or(ModuleStoreError::NotFound)?;
         Ok(modules.remove(i))
@@ -100,7 +100,7 @@ impl ModuleStore {
         &self.root_dir
     }
 
-    pub(crate) fn used_bytes(&self) -> Result<u64, ImageStoreError> {
+    pub(crate) fn used_bytes(&self) -> Result<u64, ModuleStoreError> {
        let modules = self
             .modules
             .read()
@@ -109,7 +109,7 @@ impl ModuleStore {
         
     }
 
-    pub(crate) fn used_inodes(&self) -> Result<u64, ImageStoreError> {
+    pub(crate) fn used_inodes(&self) -> Result<u64, ModuleStoreError> {
         let modules = self
             .modules
             .read()
