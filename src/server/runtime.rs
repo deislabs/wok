@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::mpsc::{channel, Sender};
@@ -544,21 +545,27 @@ impl RuntimeService for CriRuntimeService {
 
         let module_store = self.module_store.lock().unwrap();
 
+        // Get the WASM data from the image
+        // TODO: handle error
+        let image_ref =
+            Reference::try_from(&container.image_ref).expect("Failed to parse image_ref");
+        let module_path = module_store
+            .pull_file_path(image_ref)
+            .into_os_string()
+            .into_string()
+            .unwrap();
+
+        let env: EnvVars = container
+            .config
+            .envs
+            .iter()
+            .cloned()
+            .map(|pair| (pair.key, pair.value))
+            .collect();
+
         match runtime {
             RuntimeHandler::WASCC => {
-                use crate::wasm::wascc::EnvVars;
-                use std::convert::TryFrom;
-
-                // Get the actor from the image
-                // TODO: handle error
-                let image_ref =
-                    Reference::try_from(&container.image_ref).expect("Failed to parse image_ref");
-                let module_path = module_store
-                    .pull_file_path(image_ref)
-                    .into_os_string()
-                    .into_string()
-                    .unwrap();
-                // Load the actor
+                // Load the WASM
                 let wasm = std::fs::read(module_path)?;
                 // Get the key out of the request
                 let key = container
@@ -566,13 +573,7 @@ impl RuntimeService for CriRuntimeService {
                     .annotations
                     .get(ACTOR_KEY_ANNOTATION)
                     .ok_or_else(|| Status::invalid_argument("actor key is required"))?;
-                let env: EnvVars = container
-                    .config
-                    .envs
-                    .iter()
-                    .cloned()
-                    .map(|pair| (pair.key, pair.value))
-                    .collect();
+
                 wascc_run_http(wasm, env, key).map_err(|e| Status::internal(e.to_string()))?;
                 let mut running_containers = self.running_containers.write().unwrap();
                 // Fake token. Needs to be replaced with a real cancellation token, which should come from wascc.
@@ -580,24 +581,6 @@ impl RuntimeService for CriRuntimeService {
                 running_containers.insert(container.id, token);
             }
             RuntimeHandler::WASI => {
-                use std::convert::TryFrom;
-
-                // TODO: handle error
-                let image_ref =
-                    Reference::try_from(&container.image_ref).expect("Failed to parse image_ref");
-                let module_path = module_store
-                    .pull_file_path(image_ref)
-                    .into_os_string()
-                    .into_string()
-                    .unwrap();
-                let env: HashMap<String, String> = container
-                    .config
-                    .envs
-                    .iter()
-                    .cloned()
-                    .map(|pair| (pair.key, pair.value))
-                    .collect();
-
                 let runtime = crate::wasm::WasiRuntime::new(
                     module_path,
                     env,
