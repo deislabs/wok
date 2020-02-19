@@ -132,7 +132,7 @@ impl ModuleStore {
 fn pull_wasm(reference: Reference, fp: PathBuf) -> Result<(), ModuleStoreError> {
     let filepath = fp
         .to_str()
-        .ok_or_else(|| ModuleStoreError::InvalidPullPath)?;
+        .ok_or(ModuleStoreError::InvalidPullPath)?;
     println!("pulling {} into {}", reference.whole, filepath);
     let c_ref = CString::new(reference.whole).or(Err(ModuleStoreError::InvalidReference))?;
     let c_file = CString::new(filepath).or(Err(ModuleStoreError::InvalidPullPath))?;
