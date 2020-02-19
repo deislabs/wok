@@ -52,7 +52,7 @@ impl ModuleStore {
     pub fn new(root_dir: PathBuf) -> Self {
         // TODO(bacongobbler): populate `modules` using `root_dir`
         ModuleStore {
-            root_dir: root_dir,
+            root_dir,
             modules: Arc::new(RwLock::new(vec![])),
         }
     }
@@ -75,8 +75,14 @@ impl ModuleStore {
     }
 
     pub fn remove(&mut self, key: String) -> Result<Module, ModuleStoreError> {
-        let mut modules = self.modules.write().or(Err(ModuleStoreError::LockNotAcquired))?;
-        let i = modules.iter().position(|i| i.id == key).ok_or(ModuleStoreError::NotFound)?;
+        let mut modules = self
+            .modules
+            .write()
+            .or(Err(ModuleStoreError::LockNotAcquired))?;
+        let i = modules
+            .iter()
+            .position(|i| i.id == key)
+            .ok_or(ModuleStoreError::NotFound)?;
         Ok(modules.remove(i))
     }
 
@@ -101,12 +107,11 @@ impl ModuleStore {
     }
 
     pub(crate) fn used_bytes(&self) -> Result<u64, ModuleStoreError> {
-       let modules = self
+        let modules = self
             .modules
             .read()
             .or(Err(ModuleStoreError::LockNotAcquired))?;
-       Ok(modules.iter().map(|i| i.size).sum())
-        
+        Ok(modules.iter().map(|i| i.size).sum())
     }
 
     pub(crate) fn used_inodes(&self) -> Result<u64, ModuleStoreError> {
@@ -130,9 +135,7 @@ impl ModuleStore {
 }
 
 fn pull_wasm(reference: Reference, fp: PathBuf) -> Result<(), ModuleStoreError> {
-    let filepath = fp
-        .to_str()
-        .ok_or(ModuleStoreError::InvalidPullPath)?;
+    let filepath = fp.to_str().ok_or(ModuleStoreError::InvalidPullPath)?;
     println!("pulling {} into {}", reference.whole, filepath);
     let c_ref = CString::new(reference.whole).or(Err(ModuleStoreError::InvalidReference))?;
     let c_file = CString::new(filepath).or(Err(ModuleStoreError::InvalidPullPath))?;
