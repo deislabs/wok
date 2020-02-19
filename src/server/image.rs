@@ -9,25 +9,25 @@ use super::grpc;
 
 use crate::docker::Reference;
 use crate::server::CriResult;
-use crate::store::ImageStore;
+use crate::store::ModuleStore;
 use crate::util;
 
 /// Implement a CRI Image Service
 #[derive(Debug, Default)]
 pub struct CriImageService {
-    image_store: Mutex<ImageStore>,
+    module_store: Mutex<ModuleStore>,
 }
 
 impl CriImageService {
     pub fn new(root_dir: PathBuf) -> Self {
         util::ensure_root_dir(&root_dir).expect("cannot create root directory for image service");
         CriImageService {
-            image_store: Mutex::new(ImageStore::new(root_dir)),
+            module_store: Mutex::new(ModuleStore::new(root_dir)),
         }
     }
 
     fn pull_module(&self, module_ref: Reference) -> Result<(), failure::Error> {
-        self.image_store.lock().unwrap().pull(module_ref)?;
+        self.module_store.lock().unwrap().pull(module_ref)?;
         Ok(())
     }
 }
@@ -39,7 +39,7 @@ impl grpc::image_service_server::ImageService for CriImageService {
         _request: Request<grpc::ListImagesRequest>,
     ) -> CriResult<grpc::ListImagesResponse> {
         let resp = grpc::ListImagesResponse {
-            images: self.image_store.lock().unwrap().list(),
+            images: self.module_store.lock().unwrap().list(),
         };
         Ok(Response::new(resp))
     }
@@ -64,12 +64,12 @@ impl grpc::image_service_server::ImageService for CriImageService {
         &self,
         _request: Request<grpc::ImageFsInfoRequest>,
     ) -> CriResult<grpc::ImageFsInfoResponse> {
-        let image_store = self.image_store.lock().unwrap();
+        let module_store = self.module_store.lock().unwrap();
         let resp = grpc::ImageFsInfoResponse {
             image_filesystems: vec![grpc::FilesystemUsage {
                 timestamp: Utc::now().timestamp_nanos(),
                 fs_id: Some(grpc::FilesystemIdentifier {
-                    mountpoint: image_store
+                    mountpoint: module_store
                         .root_dir()
                         .clone()
                         .into_os_string()
@@ -77,10 +77,10 @@ impl grpc::image_service_server::ImageService for CriImageService {
                         .unwrap(),
                 }),
                 used_bytes: Some(grpc::UInt64Value {
-                    value: image_store.used_bytes(),
+                    value: module_store.used_bytes(),
                 }),
                 inodes_used: Some(grpc::UInt64Value {
-                    value: image_store.used_inodes(),
+                    value: module_store.used_inodes(),
                 }),
             }],
         };
