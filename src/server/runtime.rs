@@ -15,7 +15,7 @@ use uuid::Uuid;
 // RuntimeService is converted to a package runtime_service_server
 use super::grpc::{runtime_service_server::RuntimeService, *};
 use crate::docker::Reference;
-use crate::store::ImageStore;
+use crate::store::ModuleStore;
 use crate::util;
 use crate::wasm::wascc::*;
 use crate::wasm::{Result, Runtime};
@@ -124,7 +124,7 @@ impl From<PodSandbox> for PodSandboxStatus {
 /// Implement a CRI runtime service.
 #[derive(Debug, Default)]
 pub struct CriRuntimeService {
-    image_store: Mutex<ImageStore>,
+    module_store: Mutex<ModuleStore>,
     // NOTE: we could replace this with evmap or crossbeam
     sandboxes: Arc<RwLock<BTreeMap<String, PodSandbox>>>,
     containers: Arc<RwLock<Vec<UserContainer>>>,
@@ -136,7 +136,7 @@ impl CriRuntimeService {
     pub fn new(dir: PathBuf, pod_cidr: Option<IpNet>) -> Self {
         util::ensure_root_dir(&dir).expect("cannot create root directory for runtime service");
         CriRuntimeService {
-            image_store: Mutex::new(ImageStore::new(dir)),
+            module_store: Mutex::new(ModuleStore::new(dir)),
             sandboxes: Arc::new(RwLock::new(BTreeMap::default())),
             containers: Arc::new(RwLock::new(vec![])),
             running_containers: Arc::new(RwLock::new(HashMap::new())),
@@ -472,7 +472,7 @@ impl RuntimeService for CriRuntimeService {
 
         // create container root directory.
         let container_root_dir = self
-            .image_store
+            .module_store
             .lock()
             .unwrap()
             .root_dir()
@@ -542,7 +542,7 @@ impl RuntimeService for CriRuntimeService {
             (runtime, container.clone())
         };
 
-        let image_store = self.image_store.lock().unwrap();
+        let module_store = self.module_store.lock().unwrap();
 
         match runtime {
             RuntimeHandler::WASCC => {
@@ -553,7 +553,7 @@ impl RuntimeService for CriRuntimeService {
                 // TODO: handle error
                 let image_ref =
                     Reference::try_from(&container.image_ref).expect("Failed to parse image_ref");
-                let module_path = image_store
+                let module_path = module_store
                     .pull_file_path(image_ref)
                     .into_os_string()
                     .into_string()
@@ -585,7 +585,7 @@ impl RuntimeService for CriRuntimeService {
                 // TODO: handle error
                 let image_ref =
                     Reference::try_from(&container.image_ref).expect("Failed to parse image_ref");
-                let module_path = image_store
+                let module_path = module_store
                     .pull_file_path(image_ref)
                     .into_os_string()
                     .into_string()
@@ -1095,11 +1095,11 @@ mod test {
             tag: "baz",
         };
 
-        let image_store = ImageStore::new(dir.path().to_path_buf());
+        let module_store = ModuleStore::new(dir.path().to_path_buf());
 
         // create temp directories
         let log_dir_name = dir.path().join("testdir");
-        let image_file = image_store.pull_file_path(image_ref);
+        let image_file = module_store.pull_file_path(image_ref);
         // log directory
         tokio::fs::create_dir_all(&log_dir_name)
             .await
