@@ -5,7 +5,6 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
-    thread,
 };
 
 use crate::wasm::{Runtime, WasiRuntime};
@@ -57,7 +56,9 @@ impl RuntimeFuture {
         }));
 
         let inner_state = state.clone();
-        thread::spawn(move || {
+
+        // Delegate the actual execution to Tokio rather than directly to a thread.
+        tokio::spawn(async move {
             let mut run = inner_state.lock().unwrap();
             // This runs the WASM to completion.
             // TODO: Once we've tested, reduce this to nice concise if/let
