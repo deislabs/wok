@@ -31,7 +31,7 @@ impl fmt::Display for ModuleStoreError {
             ModuleStoreError::InvalidPullPath => f.write_str("invalid pull path"),
             ModuleStoreError::InvalidReference => f.write_str("invalid reference"),
             ModuleStoreError::LockNotAcquired => f.write_str("cannot acquire lock on store"),
-            ModuleStoreError::NotFound => f.write_str("image not found"),
+            ModuleStoreError::NotFound => f.write_str("module not found"),
         }
     }
 }
@@ -43,14 +43,14 @@ impl Error for ModuleStoreError {
             ModuleStoreError::InvalidPullPath => "Invalid pull path",
             ModuleStoreError::InvalidReference => "Invalid reference",
             ModuleStoreError::LockNotAcquired => "Cannot acquire lock on store",
-            ModuleStoreError::NotFound => "Image not found",
+            ModuleStoreError::NotFound => "Module not found",
         }
     }
 }
 
 impl ModuleStore {
     pub fn new(root_dir: PathBuf) -> Self {
-        // TODO(bacongobbler): populate `images` using `root_dir`
+        // TODO(bacongobbler): populate `modules` using `root_dir`
         ModuleStore {
             root_dir: root_dir,
             modules: Arc::new(RwLock::new(vec![])),
@@ -66,7 +66,7 @@ impl ModuleStore {
         Ok(())
     }
 
-    pub fn list(&self) -> Result<Vec<Image>, ModuleStoreError> {
+    pub fn list(&self) -> Result<Vec<Module>, ModuleStoreError> {
         let modules = self
             .modules
             .read()
@@ -74,7 +74,7 @@ impl ModuleStore {
         Ok(modules.clone())
     }
 
-    pub fn remove(&mut self, key: String) -> Result<Image, ModuleStoreError> {
+    pub fn remove(&mut self, key: String) -> Result<Module, ModuleStoreError> {
         let mut modules = self.modules.write().or(Err(ModuleStoreError::LockNotAcquired))?;
         let i = modules.iter().position(|i| i.id == key).ok_or(ModuleStoreError::NotFound)?;
         Ok(modules.remove(i))
