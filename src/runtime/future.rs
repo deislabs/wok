@@ -10,6 +10,8 @@ use std::{
 
 use crate::wasm::{Runtime, WasiRuntime};
 
+/// RuntimeState captures information about the current state of the runtime that
+/// is wrapped by the future. This is used internally to track progress.
 struct RuntimeState {
     completed: bool,
     err: Option<failure::Error>,
@@ -17,6 +19,7 @@ struct RuntimeState {
     waker: Option<Waker>,
 }
 
+/// A future that can take a WasiRuntime and execute it asynchronously.
 pub struct RuntimeFuture {
     state: Arc<Mutex<RuntimeState>>,
 }
