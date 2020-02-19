@@ -75,6 +75,7 @@ board](https://github.com/deislabs/wok/projects/1).
 - `cargo`
 - [`just`](https://github.com/casey/just)
 - `clippy` (`rustup component add clippy`)
+- `bindgen` (`cargo install bindgen`)
 - `crictl` and `critest` for integration testing
 
 Ensure you clone this project in your `GOPATH`.  The environment variable

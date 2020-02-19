@@ -30,6 +30,7 @@ install:
 bootstrap:
     cd libwasm2oci && dep ensure -v
     GO111MODULE= CGO_ENABLED=1 go build -buildmode=c-archive -o target/libwasm2oci.a libwasm2oci/libwasm2oci.go
+    bindgen -o src/oci.rs target/libwasm2oci.h --raw-line "#![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]"
 
 # A quick test to make sure the server is executing.
 server-version:
