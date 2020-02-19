@@ -31,7 +31,7 @@ impl fmt::Display for ModuleStoreError {
             ModuleStoreError::InvalidPullPath => f.write_str("invalid pull path"),
             ModuleStoreError::InvalidReference => f.write_str("invalid reference"),
             ModuleStoreError::LockNotAcquired => f.write_str("cannot acquire lock on store"),
-            ModuleStoreError::NotFound => f.write_str("image not found"),
+            ModuleStoreError::NotFound => f.write_str("module not found"),
         }
     }
 }
@@ -43,14 +43,14 @@ impl Error for ModuleStoreError {
             ModuleStoreError::InvalidPullPath => "Invalid pull path",
             ModuleStoreError::InvalidReference => "Invalid reference",
             ModuleStoreError::LockNotAcquired => "Cannot acquire lock on store",
-            ModuleStoreError::NotFound => "Image not found",
+            ModuleStoreError::NotFound => "Module not found",
         }
     }
 }
 
 impl ModuleStore {
     pub fn new(root_dir: PathBuf) -> Self {
-        // TODO(bacongobbler): populate `images` using `root_dir`
+        // TODO(bacongobbler): populate `modules` using `root_dir`
         ModuleStore {
             root_dir: root_dir,
             modules: Arc::new(RwLock::new(vec![])),
@@ -58,24 +58,25 @@ impl ModuleStore {
     }
 
     pub fn add(&mut self, module: Module) -> Result<(), ModuleStoreError> {
-        let mut modules = match self.modules.write() {
-            Ok(modules) => modules,
-            Err(_) => {
-                return Err(ModuleStoreError::LockNotAcquired)
-            }
-        };
+        let mut modules = self
+            .modules
+            .write()
+            .or(Err(ModuleStoreError::LockNotAcquired))?;
         modules.push(module);
         Ok(())
     }
 
-    pub fn list(&self) -> Vec<Module> {
-        let modules = self.modules.read().unwrap();
-        (*modules.clone()).to_vec()
+    pub fn list(&self) -> Result<Vec<Module>, ModuleStoreError> {
+        let modules = self
+            .modules
+            .read()
+            .or(Err(ModuleStoreError::LockNotAcquired))?;
+        Ok(modules.clone())
     }
 
     pub fn remove(&mut self, key: String) -> Result<Module, ModuleStoreError> {
         let mut modules = self.modules.write().or(Err(ModuleStoreError::LockNotAcquired))?;
-        let i = modules.iter().position(|i| i.id == key).ok_or_else(|| ModuleStoreError::NotFound)?;
+        let i = modules.iter().position(|i| i.id == key).ok_or(ModuleStoreError::NotFound)?;
         Ok(modules.remove(i))
     }
 
@@ -99,14 +100,21 @@ impl ModuleStore {
         &self.root_dir
     }
 
-    pub(crate) fn used_bytes(&self) -> u64 {
-        let modules = self.modules.read().unwrap();
-        modules.iter().map(|i| i.size).sum()
+    pub(crate) fn used_bytes(&self) -> Result<u64, ModuleStoreError> {
+       let modules = self
+            .modules
+            .read()
+            .or(Err(ModuleStoreError::LockNotAcquired))?;
+       Ok(modules.iter().map(|i| i.size).sum())
+        
     }
 
-    pub(crate) fn used_inodes(&self) -> u64 {
-        let modules = self.modules.read().unwrap();
-        modules.len() as u64
+    pub(crate) fn used_inodes(&self) -> Result<u64, ModuleStoreError> {
+        let modules = self
+            .modules
+            .read()
+            .or(Err(ModuleStoreError::LockNotAcquired))?;
+        Ok(modules.len() as u64)
     }
 
     pub(crate) fn pull_path(&self, image_ref: Reference) -> PathBuf {
@@ -122,9 +130,12 @@ impl ModuleStore {
 }
 
 fn pull_wasm(reference: Reference, fp: PathBuf) -> Result<(), ModuleStoreError> {
-    println!("pulling {} into {}", reference.whole, fp.to_str().unwrap());
+    let filepath = fp
+        .to_str()
+        .ok_or(ModuleStoreError::InvalidPullPath)?;
+    println!("pulling {} into {}", reference.whole, filepath);
     let c_ref = CString::new(reference.whole).or(Err(ModuleStoreError::InvalidReference))?;
-    let c_file = CString::new(fp.to_str().unwrap()).or(Err(ModuleStoreError::InvalidPullPath))?;
+    let c_file = CString::new(filepath).or(Err(ModuleStoreError::InvalidPullPath))?;
 
     let go_str_ref = GoString {
         p: c_ref.as_ptr(),

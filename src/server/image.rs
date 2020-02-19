@@ -39,7 +39,7 @@ impl grpc::image_service_server::ImageService for CriImageService {
         _request: Request<grpc::ListImagesRequest>,
     ) -> CriResult<grpc::ListImagesResponse> {
         let resp = grpc::ListImagesResponse {
-            images: self.module_store.lock().unwrap().list(),
+            images: self.module_store.lock().unwrap().list().unwrap(),
         };
         Ok(Response::new(resp))
     }
@@ -77,10 +77,10 @@ impl grpc::image_service_server::ImageService for CriImageService {
                         .unwrap(),
                 }),
                 used_bytes: Some(grpc::UInt64Value {
-                    value: module_store.used_bytes(),
+                    value: module_store.used_bytes().unwrap(),
                 }),
                 inodes_used: Some(grpc::UInt64Value {
-                    value: module_store.used_inodes(),
+                    value: module_store.used_inodes().unwrap(),
                 }),
             }],
         };
