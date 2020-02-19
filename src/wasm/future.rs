@@ -55,6 +55,7 @@ impl RuntimeFuture {
             waker: None,
             err: None,
         }));
+
         let inner_state = state.clone();
         thread::spawn(move || {
             let mut run = inner_state.lock().unwrap();
@@ -82,7 +83,7 @@ impl RuntimeFuture {
     ///
     /// Normally, these are returned as the output on the future. But in some cases, it may be
     /// necessary to get the logs while the WASM is executing.
-    pub fn output(&self) -> Result<(BufReader<File>, BufReader<File>), failure::Error> {
+    fn output(&self) -> Result<(BufReader<File>, BufReader<File>), failure::Error> {
         self.state.lock().unwrap().rt.output()
     }
 }

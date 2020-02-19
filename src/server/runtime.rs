@@ -1472,8 +1472,6 @@ mod test {
     }
 }
 
-mod future;
-
 pub struct RuntimeContainer {
     handle: JoinHandle<Result<()>>,
     sender: Sender<()>,
