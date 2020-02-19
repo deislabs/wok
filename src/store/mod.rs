@@ -57,7 +57,7 @@ impl ModuleStore {
         }
     }
 
-    pub fn add(&mut self, module: Module) -> Result<(), ModuleSoreError> {
+    pub fn add(&mut self, module: Module) -> Result<(), ModuleStoreError> {
         let mut modules = self
             .modules
             .write()
