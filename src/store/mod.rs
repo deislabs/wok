@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::ffi::CString;
 use std::fmt;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -17,6 +18,7 @@ pub struct ModuleStore {
 /// An error which can be returned when there was an error
 #[derive(Debug)]
 pub enum ModuleStoreError {
+    CannotFetchModuleMetadata,
     CannotPullModule,
     InvalidPullPath,
     InvalidReference,
@@ -27,6 +29,9 @@ pub enum ModuleStoreError {
 impl fmt::Display for ModuleStoreError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
+            ModuleStoreError::CannotFetchModuleMetadata => {
+                f.write_str("cannot fetch metadata from the module")
+            }
             ModuleStoreError::CannotPullModule => f.write_str("cannot pull module"),
             ModuleStoreError::InvalidPullPath => f.write_str("invalid pull path"),
             ModuleStoreError::InvalidReference => f.write_str("invalid reference"),
@@ -39,6 +44,7 @@ impl fmt::Display for ModuleStoreError {
 impl Error for ModuleStoreError {
     fn description(&self) -> &str {
         match *self {
+            ModuleStoreError::CannotFetchModuleMetadata => "Cannot fetch metadata from the module",
             ModuleStoreError::CannotPullModule => "Cannot pull module",
             ModuleStoreError::InvalidPullPath => "Invalid pull path",
             ModuleStoreError::InvalidReference => "Invalid reference",
@@ -88,14 +94,16 @@ impl ModuleStore {
 
     pub fn pull(&mut self, reference: Reference) -> Result<(), ModuleStoreError> {
         let pull_path = self.pull_path(reference);
-        std::fs::create_dir_all(&pull_path).expect("could not create pull path");
+        std::fs::create_dir_all(&pull_path).or(Err(ModuleStoreError::CannotPullModule))?;
         pull_wasm(reference, self.pull_file_path(reference))?;
+        let attrs = fs::metadata(self.pull_file_path(reference))
+            .or(Err(ModuleStoreError::CannotFetchModuleMetadata))?;
         // TODO(bacongobbler): fetch image information from the module
         let m = Module {
             id: String::from(reference.whole),
             repo_digests: vec![],
             repo_tags: vec![],
-            size: 0,
+            size: attrs.len(),
             uid: None,
             username: "".to_owned(),
         };
@@ -122,15 +130,12 @@ impl ModuleStore {
         Ok(modules.len() as u64)
     }
 
-    pub(crate) fn pull_path(&self, image_ref: Reference) -> PathBuf {
-        self.root_dir
-            .join(image_ref.registry)
-            .join(image_ref.repo)
-            .join(image_ref.tag)
+    pub(crate) fn pull_path(&self, r: Reference) -> PathBuf {
+        self.root_dir.join(r.registry).join(r.repo).join(r.tag)
     }
 
-    pub(crate) fn pull_file_path(&self, image_ref: Reference) -> PathBuf {
-        self.pull_path(image_ref).join("module.wasm")
+    pub(crate) fn pull_file_path(&self, r: Reference) -> PathBuf {
+        self.pull_path(r).join("module.wasm")
     }
 }
 
@@ -163,6 +168,40 @@ fn test_pull_wasm() {
     // this is a public registry, so this test is both making sure the library is working,
     // as well as ensuring the registry is publicly accessible
     let module = "webassembly.azurecr.io/hello-wasm:v1".to_owned();
-    let image_ref = Reference::try_from(&module).expect("Failed to parse image_ref");
-    pull_wasm(image_ref, PathBuf::from("target/pulled.wasm")).unwrap();
+    let r = Reference::try_from(&module).expect("Failed to parse reference");
+    pull_wasm(r, PathBuf::from("target/pulled.wasm")).unwrap();
+}
+
+#[test]
+fn test_module_store_used_bytes() {
+    let mut s = ModuleStore{
+        root_dir: PathBuf::from("/"),
+        modules: Arc::new(RwLock::new(vec![]))
+    };
+    assert_eq!(0, s.used_bytes().expect("could not retrieve used_bytes"));
+
+    let m = Module {
+        id: "1".to_owned(),
+        repo_digests: vec![],
+        repo_tags: vec![],
+        size: 1,
+        uid: None,
+        username: "".to_owned(),
+    };
+    s.add(m).expect("could not add module to store");
+    assert_eq!(1, s.used_bytes().expect("could not retrieve used_bytes"));
+
+    let m2 = Module {
+        id: "2".to_owned(),
+        repo_digests: vec![],
+        repo_tags: vec![],
+        size: 2,
+        uid: None,
+        username: "".to_owned(),
+    };
+    s.add(m2).expect("could not add module to store");
+    assert_eq!(3, s.used_bytes().expect("could not retrieve used_bytes"));
+
+    s.remove("1".to_owned()).expect("could not remove module");
+    assert_eq!(2, s.used_bytes().expect("could not retrieve used_bytes"));
 }
