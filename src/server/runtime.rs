@@ -501,7 +501,9 @@ impl RuntimeService for CriRuntimeService {
         if sandbox_config.log_directory != "" && container.config.log_path != "" {
             let log_path =
                 PathBuf::from(&sandbox_config.log_directory).join(&container.config.log_path);
-            tokio::fs::create_dir_all(log_path.clone()).await?;
+            if let Some(parent) = log_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
             container.log_path = Some(log_path);
             log::debug!("composed container log path using sandbox log directory {} and container config log path {}", sandbox_config.log_directory, container.config.log_path);
         } else {
