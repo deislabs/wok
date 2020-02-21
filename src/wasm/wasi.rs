@@ -4,7 +4,6 @@ use std::io::BufReader;
 use std::path::Path;
 
 use log::info;
-use tempfile::NamedTempFile;
 use wasi_common::*;
 use wasmtime::*;
 use wasmtime_wasi::*;
@@ -25,9 +24,9 @@ pub struct WasiRuntime {
     /// the same path will be allowed in the runtime
     dirs: HashMap<String, Option<String>>,
     /// Handle to stdout
-    stdout: Option<NamedTempFile>,
+    stdout: Option<File>,
     /// handle to stderr
-    stderr: Option<NamedTempFile>,
+    stderr: Option<File>,
 }
 
 impl Runtime for WasiRuntime {
@@ -41,12 +40,12 @@ impl Runtime for WasiRuntime {
 
         let ctx_builder = WasiCtxBuilder::new().args(&self.args).envs(&self.env);
         let ctx_builder = match &self.stdout {
-            Some(f) => ctx_builder.stdout(f.reopen()?),
+            Some(f) => ctx_builder.stdout(f.try_clone()?),
             None => ctx_builder,
         };
 
         let mut ctx_builder = match &self.stderr {
-            Some(f) => ctx_builder.stderr(f.reopen()?),
+            Some(f) => ctx_builder.stderr(f.try_clone()?),
             None => ctx_builder,
         };
 
@@ -103,15 +102,13 @@ impl Runtime for WasiRuntime {
         let stdout = match &self.stdout {
             Some(s) => s,
             None => return Err(format_err!("logging is not enabled for this runtime")),
-        }
-        .reopen()?;
+        };
         let stderr = match &self.stderr {
             Some(s) => s,
             None => return Err(format_err!("logging is not enabled for this runtime")),
-        }
-        .reopen()?;
+        };
 
-        Ok((BufReader::new(stdout), BufReader::new(stderr)))
+        Ok((BufReader::new(stdout.try_clone()?), BufReader::new(stderr.try_clone()?)))
     }
 }
 
@@ -142,13 +139,18 @@ impl WasiRuntime {
         // think it necessary, we can make these permanent files with a cleanup
         // loop that runs elsewhere. These will get deleted when the reference
         // is dropped
-        let stdout = match log_file_location {
-            Some(l) => Some(NamedTempFile::new_in(l)?),
-            None => None,
-        };
-        let stderr = match log_file_location {
-            Some(l) => Some(NamedTempFile::new_in(l)?),
-            None => None,
+        let stdout: Option<File>;
+        let stderr: Option<File>;
+        match log_file_location {
+            Some(l) => {
+                let f = File::create(l)?;
+                stdout = Some(f.try_clone()?);
+                stderr = Some(f.try_clone()?);
+            },
+            None => {
+                stdout = None;
+                stderr = None;
+            },
         };
 
         Ok(WasiRuntime {
