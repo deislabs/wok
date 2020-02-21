@@ -524,24 +524,20 @@ impl RuntimeService for CriRuntimeService {
         req: Request<StartContainerRequest>,
     ) -> CriResult<StartContainerResponse> {
         let id = req.into_inner().container_id;
+        let mut containers = self.containers.write().unwrap();
 
         // Create specific scope for the container read lock
-        let (runtime, container) = {
-            let containers = self.containers.read().unwrap();
-            let container = containers
-                .iter()
-                .find(|c| c.id == id)
-                .ok_or_else(|| Status::not_found("Container not found"))?;
-            let sandboxes = self.sandboxes.read().unwrap();
-            let sandbox = sandboxes
-                .get(&container.pod_sandbox_id)
-                .ok_or_else(|| Status::not_found("Sandbox not found"))?;
+        let mut container = containers
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or_else(|| Status::not_found("Container not found"))?;
+        let sandboxes = self.sandboxes.read().unwrap();
+        let sandbox = sandboxes
+            .get(&container.pod_sandbox_id)
+            .ok_or_else(|| Status::not_found("Sandbox not found"))?;
 
-            let runtime = RuntimeHandler::from_string(&sandbox.runtime_handler)
-                .map_err(|_| Status::invalid_argument("Invalid runtime handler"))?;
-
-            (runtime, container.clone())
-        };
+        let runtime = RuntimeHandler::from_string(&sandbox.runtime_handler)
+            .map_err(|_| Status::invalid_argument("Invalid runtime handler"))?;
 
         let module_store = self.module_store.lock().unwrap();
 
@@ -578,7 +574,7 @@ impl RuntimeService for CriRuntimeService {
                 let mut running_containers = self.running_containers.write().unwrap();
                 // Fake token. Needs to be replaced with a real cancellation token, which should come from wascc.
                 let token = ContainerCancellationToken::WasccCancelationToken(key.to_string());
-                running_containers.insert(container.id, token);
+                running_containers.insert(container.id.clone(), token);
             }
             RuntimeHandler::WASI => {
                 let runtime = crate::wasm::WasiRuntime::new(
@@ -593,9 +589,10 @@ impl RuntimeService for CriRuntimeService {
 
                 let token = RuntimeContainer::new(runtime).start();
                 let mut running_containers = self.running_containers.write().unwrap();
-                running_containers.insert(container.id, token);
+                running_containers.insert(container.id.clone(), token);
             }
         };
+        container.state = ContainerState::ContainerRunning as i32;
         Ok(Response::new(StartContainerResponse {}))
     }
 
@@ -683,7 +680,7 @@ impl RuntimeService for CriRuntimeService {
                 labels: container.config.labels.to_owned(),
                 annotations: container.config.annotations.to_owned(),
                 mounts: vec![],
-                log_path: container.log_path.to_owned().unwrap().into_os_string().into_string().unwrap(),
+                log_path: container.log_path.to_owned().unwrap_or(PathBuf::from("")).into_os_string().into_string().unwrap(),
             }),
             info: HashMap::new(),
         }))
@@ -1124,6 +1121,9 @@ mod test {
         let res = svc.start_container(req).await;
         // We expect an empty response object
         res.expect("start container result");
+        // We should also expect the container to be in the running state
+        let containers = svc.containers.read().unwrap();
+        assert_eq!(ContainerState::ContainerRunning as i32, containers[0].state);
     }
 
     #[tokio::test]
@@ -1278,7 +1278,24 @@ mod test {
     #[tokio::test]
     async fn test_container_status() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
-        let req = Request::new(ContainerStatusRequest::default());
+        let mut containers = svc.containers.write().unwrap();
+        containers.push(UserContainer {
+            id: "test".to_owned(),
+            pod_sandbox_id: "test".to_owned(),
+            config: ContainerConfig {
+                metadata: Some(ContainerMetadata {
+                    attempt: 1,
+                    name: "test".to_owned(),
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        drop(containers);
+        let req = Request::new(ContainerStatusRequest{
+            container_id: "test".to_owned(),
+            verbose: false,
+        });
         let res = svc.container_status(req).await;
         assert_eq!(
             "because I said so",
