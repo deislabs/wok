@@ -92,7 +92,7 @@ $ crictl create d736d297-6ec1-4edc-a1b7-acad55cb2806 contrib/crictl/container-co
 Now let's check the container and make sure it is in the "Created" state:
 
 ```
-$ crictl ps --no-trunc
+$ crictl ps -a --no-trunc
 CONTAINER                              IMAGE                                  CREATED              STATE               NAME                ATTEMPT             POD ID
 49479502-f935-4556-ab72-f664a2678edc   webassembly.azurecr.io/hello-wasm:v1   About a minute ago   Created             hello-wasm          0                   d736d297-6ec1
 ```
