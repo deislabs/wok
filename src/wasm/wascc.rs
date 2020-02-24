@@ -166,7 +166,6 @@ mod test {
         host::add_native_capability(data).expect("added echo capability");
 
         let wasm = std::fs::read("./testdata/echo_actor_signed.wasm").expect("load echo WASM");
-        // TODO: use wascc_run to execute echo_actor
         wascc_run(
             wasm,
             ECHO_ACTOR_KEY,
