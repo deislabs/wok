@@ -2,13 +2,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 
 use chrono::Utc;
 use ipnet::IpNet;
-use log::error;
-use log::info;
+use log::{error, info};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
@@ -210,16 +210,7 @@ impl RuntimeService for CriRuntimeService {
                 Status::invalid_argument(format!("invalid CIDR given: {}", e.to_string()))
             })?);
         }
-        let mut cidr = self
-            .pod_cidr
-            .write()
-            .map_err(|e| {
-                Status::internal(format!(
-                    "Data inconsistency when trying to update runtime config data: {}",
-                    e.to_string()
-                ))
-            })
-            .unwrap();
+        let mut cidr = self.pod_cidr.write().await;
         *cidr = pod_cidr;
         Ok(Response::new(UpdateRuntimeConfigResponse {}))
     }
@@ -229,11 +220,11 @@ impl RuntimeService for CriRuntimeService {
         if req.into_inner().verbose {
             extra_info.insert(
                 "running_sandboxes".to_owned(),
-                self.sandboxes.read().unwrap().len().to_string(),
+                self.sandboxes.read().await.len().to_string(),
             );
             extra_info.insert(
                 "running_containers".to_owned(),
-                self.containers.read().unwrap().len().to_string(),
+                self.containers.read().await.len().to_string(),
             );
         }
 
@@ -288,16 +279,7 @@ impl RuntimeService for CriRuntimeService {
         // TODO(taylor): According to the RwLock docs, we should panic on failure
         // to poison the RwLock. This also means we'd need to have handling for
         // recovering from a poisoned RwLock, which I am leaving for later
-        let mut sandboxes = self
-            .sandboxes
-            .write()
-            .map_err(|e| {
-                Status::internal(format!(
-                    "Data inconsistency when trying to store sandbox data: {}",
-                    e.to_string()
-                ))
-            })
-            .unwrap();
+        let mut sandboxes = self.sandboxes.write().await;
         let id = Uuid::new_v4().to_string();
         sandboxes.insert(
             id.clone(),
@@ -323,7 +305,7 @@ impl RuntimeService for CriRuntimeService {
             items: self
                 .sandboxes
                 .read()
-                .unwrap()
+                .await
                 .values()
                 .filter(|sand| {
                     (filter.id == "" || sand.id == filter.id)
@@ -346,14 +328,14 @@ impl RuntimeService for CriRuntimeService {
     ) -> CriResult<StopPodSandboxResponse> {
         let id = req.into_inner().pod_sandbox_id;
 
-        let mut sandboxes = self.sandboxes.write().unwrap();
+        let mut sandboxes = self.sandboxes.write().await;
         let mut sandbox = match sandboxes.get_mut(&id) {
             Some(s) => s,
             None => return Err(Status::not_found(format!("Sandbox {} does not exist", id))),
         };
 
         // Stop all containers inside the sandbox. This forcibly terminates all containers with no grace period.
-        let container_store = self.containers.read().unwrap();
+        let container_store = self.containers.read().await;
         let containers: Vec<&UserContainer> = container_store
             .iter()
             .filter(|x| x.pod_sandbox_id == id)
@@ -381,7 +363,7 @@ impl RuntimeService for CriRuntimeService {
     ) -> CriResult<RemovePodSandboxResponse> {
         let id = &req.into_inner().pod_sandbox_id;
 
-        let mut sandboxes = self.sandboxes.write().unwrap();
+        let mut sandboxes = self.sandboxes.write().await;
         let sandbox = match sandboxes.get(id) {
             Some(s) => s,
             None => return Err(Status::not_found(format!("Sandbox {} does not exist", id))),
@@ -399,7 +381,7 @@ impl RuntimeService for CriRuntimeService {
         // network namespace is not closed yet.
 
         // remove all containers inside the sandbox.
-        for container in self.containers.read().unwrap().iter() {
+        for container in self.containers.read().await.iter() {
             if &container.pod_sandbox_id == id {
                 self.remove_container(Request::new(RemoveContainerRequest {
                     container_id: container.id.clone(),
@@ -419,7 +401,7 @@ impl RuntimeService for CriRuntimeService {
     ) -> CriResult<PodSandboxStatusResponse> {
         let request = req.into_inner();
 
-        let sandboxes = self.sandboxes.read().unwrap();
+        let sandboxes = self.sandboxes.read().await;
         let sandbox = match sandboxes.get(&request.pod_sandbox_id) {
             Some(s) => s,
             None => {
@@ -475,7 +457,7 @@ impl RuntimeService for CriRuntimeService {
         let container_root_dir = self
             .module_store
             .lock()
-            .unwrap()
+            .await
             .root_dir()
             .join("containers")
             .join(&id);
@@ -501,7 +483,7 @@ impl RuntimeService for CriRuntimeService {
         if sandbox_config.log_directory != "" && container.config.log_path != "" {
             let log_path =
                 PathBuf::from(&sandbox_config.log_directory).join(&container.config.log_path);
-            tokio::fs::create_dir_all(log_path.clone()).await?;
+            tokio::fs::create_dir_all(&log_path).await?;
             container.log_path = Some(log_path);
             log::debug!("composed container log path using sandbox log directory {} and container config log path {}", sandbox_config.log_directory, container.config.log_path);
         } else {
@@ -514,7 +496,7 @@ impl RuntimeService for CriRuntimeService {
         }
 
         // add container to the store.
-        self.containers.write().unwrap().push(container);
+        self.containers.write().await.push(container);
 
         Ok(Response::new(CreateContainerResponse { container_id: id }))
     }
@@ -524,14 +506,14 @@ impl RuntimeService for CriRuntimeService {
         req: Request<StartContainerRequest>,
     ) -> CriResult<StartContainerResponse> {
         let id = req.into_inner().container_id;
-        let mut containers = self.containers.write().unwrap();
+        let mut containers = self.containers.write().await;
 
         // Create specific scope for the container read lock
         let mut container = containers
             .iter_mut()
             .find(|c| c.id == id)
             .ok_or_else(|| Status::not_found("Container not found"))?;
-        let sandboxes = self.sandboxes.read().unwrap();
+        let sandboxes = self.sandboxes.read().await;
         let sandbox = sandboxes
             .get(&container.pod_sandbox_id)
             .ok_or_else(|| Status::not_found("Sandbox not found"))?;
@@ -539,7 +521,7 @@ impl RuntimeService for CriRuntimeService {
         let runtime = RuntimeHandler::from_string(&sandbox.runtime_handler)
             .map_err(|_| Status::invalid_argument("Invalid runtime handler"))?;
 
-        let module_store = self.module_store.lock().unwrap();
+        let module_store = self.module_store.lock().await;
 
         // Get the WASM data from the image
         // TODO: handle error
@@ -562,7 +544,7 @@ impl RuntimeService for CriRuntimeService {
         match runtime {
             RuntimeHandler::WASCC => {
                 // Load the WASM
-                let wasm = std::fs::read(module_path)?;
+                let wasm = tokio::fs::read(module_path).await?;
                 // Get the key out of the request
                 let key = container
                     .config
@@ -571,7 +553,7 @@ impl RuntimeService for CriRuntimeService {
                     .ok_or_else(|| Status::invalid_argument("actor key is required"))?;
 
                 wascc_run_http(wasm, env, key).map_err(|e| Status::internal(e.to_string()))?;
-                let mut running_containers = self.running_containers.write().unwrap();
+                let mut running_containers = self.running_containers.write().await;
                 // Fake token. Needs to be replaced with a real cancellation token, which should come from wascc.
                 let token = ContainerCancellationToken::WasccCancelationToken(key.to_string());
                 running_containers.insert(container.id.clone(), token);
@@ -588,7 +570,7 @@ impl RuntimeService for CriRuntimeService {
                 .expect("Creating runtime failed");
 
                 let token = RuntimeContainer::new(runtime).start();
-                let mut running_containers = self.running_containers.write().unwrap();
+                let mut running_containers = self.running_containers.write().await;
                 running_containers.insert(container.id.clone(), token);
             }
         };
@@ -600,7 +582,7 @@ impl RuntimeService for CriRuntimeService {
         &self,
         req: Request<StopContainerRequest>,
     ) -> CriResult<StopContainerResponse> {
-        let tokens = self.running_containers.read().unwrap();
+        let tokens = self.running_containers.read().await;
         if let Some(token) = tokens.get(&req.into_inner().container_id) {
             token.stop()
         }
@@ -611,7 +593,7 @@ impl RuntimeService for CriRuntimeService {
         &self,
         req: Request<RemoveContainerRequest>,
     ) -> CriResult<RemoveContainerResponse> {
-        let tokens = self.running_containers.read().unwrap();
+        let tokens = self.running_containers.read().await;
         let id = req.into_inner().container_id;
         match tokens.get(&id) {
             Some(token) => token.remove(),
@@ -620,7 +602,7 @@ impl RuntimeService for CriRuntimeService {
                 log::debug!("ID {} is not found in running containers", id)
             }
         };
-        self.containers.write().unwrap().retain(|c| c.id != id);
+        self.containers.write().await.retain(|c| c.id != id);
         Ok(Response::new(RemoveContainerResponse {}))
     }
 
@@ -633,9 +615,8 @@ impl RuntimeService for CriRuntimeService {
             containers: self
                 .containers
                 .read()
-                .unwrap()
+                .await
                 .iter()
-                .cloned()
                 .filter(|c| {
                     (filter.id == "" || c.id == filter.id)
                         && filter
@@ -648,6 +629,7 @@ impl RuntimeService for CriRuntimeService {
                         && (filter.label_selector.is_empty()
                             || has_labels(&filter.label_selector, &c.config.labels))
                 })
+                .cloned()
                 .map(Container::from)
                 .collect(),
         }))
@@ -658,7 +640,7 @@ impl RuntimeService for CriRuntimeService {
         req: Request<ContainerStatusRequest>,
     ) -> CriResult<ContainerStatusResponse> {
         let id = req.into_inner().container_id;
-        let containers = self.containers.read().unwrap();
+        let containers = self.containers.read().await;
         let container = containers
             .iter()
             .find(|c| c.id == id)
@@ -680,7 +662,13 @@ impl RuntimeService for CriRuntimeService {
                 labels: container.config.labels.to_owned(),
                 annotations: container.config.annotations.to_owned(),
                 mounts: vec![],
-                log_path: container.log_path.to_owned().unwrap_or(PathBuf::from("")).into_os_string().into_string().unwrap(),
+                log_path: container
+                    .log_path
+                    .to_owned()
+                    .unwrap_or(PathBuf::from(""))
+                    .into_os_string()
+                    .into_string()
+                    .unwrap(),
             }),
             info: HashMap::new(),
         }))
@@ -691,7 +679,7 @@ impl RuntimeService for CriRuntimeService {
         req: Request<ContainerStatsRequest>,
     ) -> CriResult<ContainerStatsResponse> {
         let id = req.into_inner().container_id;
-        let containers = self.containers.read().unwrap();
+        let containers = self.containers.read().await;
         let container = containers
             .iter()
             .find(|c| c.id == id)
@@ -706,7 +694,7 @@ impl RuntimeService for CriRuntimeService {
         req: Request<ListContainerStatsRequest>,
     ) -> CriResult<ListContainerStatsResponse> {
         let filter = req.into_inner().filter.unwrap_or_default();
-        let containers = self.containers.read().unwrap();
+        let containers = self.containers.read().await;
         let container_stats: Vec<ContainerStats> = containers
             .iter()
             .filter(|c| {
@@ -800,7 +788,7 @@ mod test {
             }))
             .await
             .expect("successful update config request");
-        let set_cidr = svc.pod_cidr.read().unwrap().unwrap();
+        let set_cidr = svc.pod_cidr.read().await.unwrap();
         assert_eq!(
             IpNet::from(Ipv4Net::new(Ipv4Addr::new(192, 168, 1, 0), 24).unwrap()),
             set_cidr
@@ -857,7 +845,7 @@ mod test {
     #[tokio::test]
     async fn test_list_pod_sandbox() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
-        let mut sandboxes = svc.sandboxes.write().unwrap();
+        let mut sandboxes = svc.sandboxes.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
         sandboxes.insert(
@@ -933,7 +921,7 @@ mod test {
     #[tokio::test]
     async fn test_pod_sandbox_status() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
-        let mut sandboxes = svc.sandboxes.write().unwrap();
+        let mut sandboxes = svc.sandboxes.write().await;
         let sandbox = PodSandbox {
             id: "1".to_owned(),
             metadata: None,
@@ -966,9 +954,9 @@ mod test {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut container = UserContainer::default();
         container.pod_sandbox_id = "1".to_owned();
-        svc.containers.write().unwrap().push(container);
+        svc.containers.write().await.push(container);
 
-        let mut sandboxes = svc.sandboxes.write().unwrap();
+        let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
             "1".to_owned(),
             PodSandbox {
@@ -990,13 +978,13 @@ mod test {
         res.expect("remove sandbox result");
         // TODO(bacongobbler): un-comment this once remove_container() has been implemented.
         // assert_eq!(0, svc.containers.len());
-        assert_eq!(0, svc.sandboxes.read().unwrap().values().cloned().len());
+        assert_eq!(0, svc.sandboxes.read().await.values().len());
     }
 
     #[tokio::test]
     async fn test_stop_pod_sandbox() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
-        let mut sandboxes = svc.sandboxes.write().unwrap();
+        let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
             "test".to_owned(),
             PodSandbox {
@@ -1029,7 +1017,7 @@ mod test {
     #[tokio::test]
     async fn test_create_container() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
-        let mut sandboxes = svc.sandboxes.write().unwrap();
+        let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
             "test".to_owned(),
             PodSandbox {
@@ -1061,7 +1049,7 @@ mod test {
                 .container_id,
         )
         .unwrap();
-        assert_eq!(1, svc.containers.read().unwrap().len());
+        assert_eq!(1, svc.containers.read().await.len());
     }
 
     #[tokio::test]
@@ -1104,7 +1092,7 @@ mod test {
 
         let container_id = {
             // write container
-            let mut containers = svc.containers.write().unwrap();
+            let mut containers = svc.containers.write().await;
             container.pod_sandbox_id = sandbox.id.clone();
             container.log_path = Some(log_dir_name);
             container.image_ref = image_ref.whole.to_owned();
@@ -1113,7 +1101,7 @@ mod test {
             containers.push(container);
 
             // write sandbox
-            let mut sandboxes = svc.sandboxes.write().unwrap();
+            let mut sandboxes = svc.sandboxes.write().await;
             sandboxes.insert(sandbox.id.clone(), sandbox);
             container_id
         };
@@ -1122,7 +1110,7 @@ mod test {
         // We expect an empty response object
         res.expect("start container result");
         // We should also expect the container to be in the running state
-        let containers = svc.containers.read().unwrap();
+        let containers = svc.containers.read().await;
         assert_eq!(ContainerState::ContainerRunning as i32, containers[0].state);
     }
 
@@ -1138,7 +1126,7 @@ mod test {
     #[tokio::test]
     async fn test_remove_container() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
-        let mut containers = svc.containers.write().unwrap();
+        let mut containers = svc.containers.write().await;
         containers.push(UserContainer {
             id: "test".to_owned(),
             pod_sandbox_id: "test".to_owned(),
@@ -1167,13 +1155,13 @@ mod test {
         // We expect an empty response object
         res.expect("remove container result");
         // Check for the container to be gone and that we still have one left
-        assert_eq!(1, svc.containers.read().unwrap().len());
+        assert_eq!(1, svc.containers.read().await.len());
     }
 
     #[tokio::test]
     async fn test_list_containers() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
-        let mut containers = svc.containers.write().unwrap();
+        let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
         containers.push(UserContainer {
@@ -1278,7 +1266,7 @@ mod test {
     #[tokio::test]
     async fn test_container_status() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
-        let mut containers = svc.containers.write().unwrap();
+        let mut containers = svc.containers.write().await;
         containers.push(UserContainer {
             id: "test".to_owned(),
             pod_sandbox_id: "test".to_owned(),
@@ -1292,7 +1280,7 @@ mod test {
             ..Default::default()
         });
         drop(containers);
-        let req = Request::new(ContainerStatusRequest{
+        let req = Request::new(ContainerStatusRequest {
             container_id: "test".to_owned(),
             verbose: false,
         });
@@ -1310,7 +1298,7 @@ mod test {
     #[tokio::test]
     async fn test_container_stats() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
-        let mut containers = svc.containers.write().unwrap();
+        let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
         containers.push(UserContainer {
@@ -1359,7 +1347,7 @@ mod test {
     #[tokio::test]
     async fn test_list_container_stats() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
-        let mut containers = svc.containers.write().unwrap();
+        let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
         containers.push(UserContainer {
@@ -1493,19 +1481,23 @@ mod test {
 
 pub struct RuntimeContainer {
     handle: JoinHandle<Result<()>>,
-    sender: Sender<()>,
+    sender: UnboundedSender<()>,
 }
 
 impl RuntimeContainer {
     pub fn new<T: Runtime + Send + 'static>(rt: T) -> Self {
-        let (sender, receiver) = channel::<()>();
-        let handle = tokio::task::spawn_blocking(move || {
-            receiver.recv().unwrap();
-            if let Err(e) = rt.run() {
-                // TODO(taylor): Implement messaging here to indicate that there was a problem running the module
-                error!("Error while running module: {}", e);
-            }
-            Ok(())
+        let (sender, mut receiver) = unbounded_channel::<()>();
+        let handle = tokio::spawn(async move {
+            receiver.recv().await.unwrap();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = rt.run() {
+                    // TODO(taylor): Implement messaging here to indicate that there was a problem running the module
+                    error!("Error while running module: {}", e);
+                }
+                Ok(())
+            })
+            .await
+            .unwrap()
         });
         RuntimeContainer { handle, sender }
     }
