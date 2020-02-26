@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
 
 use chrono::Utc;
 use ipnet::IpNet;
@@ -127,10 +126,10 @@ impl From<PodSandbox> for PodSandboxStatus {
 pub struct CriRuntimeService {
     module_store: Mutex<ModuleStore>,
     // NOTE: we could replace this with evmap or crossbeam
-    sandboxes: Arc<RwLock<BTreeMap<String, PodSandbox>>>,
-    containers: Arc<RwLock<Vec<UserContainer>>>,
-    running_containers: Arc<RwLock<HashMap<String, ContainerCancellationToken>>>,
-    pod_cidr: Arc<RwLock<Option<IpNet>>>,
+    sandboxes: RwLock<BTreeMap<String, PodSandbox>>,
+    containers: RwLock<Vec<UserContainer>>,
+    running_containers: RwLock<HashMap<String, ContainerCancellationToken>>,
+    pod_cidr: RwLock<Option<IpNet>>,
 }
 
 impl CriRuntimeService {
@@ -138,10 +137,10 @@ impl CriRuntimeService {
         util::ensure_root_dir(&dir).expect("cannot create root directory for runtime service");
         CriRuntimeService {
             module_store: Mutex::new(ModuleStore::new(dir)),
-            sandboxes: Arc::new(RwLock::new(BTreeMap::default())),
-            containers: Arc::new(RwLock::new(vec![])),
-            running_containers: Arc::new(RwLock::new(HashMap::new())),
-            pod_cidr: Arc::new(RwLock::new(pod_cidr)),
+            sandboxes: RwLock::new(BTreeMap::default()),
+            containers: RwLock::new(vec![]),
+            running_containers: RwLock::new(HashMap::new()),
+            pod_cidr: RwLock::new(pod_cidr),
         }
     }
 }
@@ -204,12 +203,14 @@ impl RuntimeService for CriRuntimeService {
             .network_config
             .unwrap_or_default()
             .pod_cidr;
-        let mut pod_cidr: Option<IpNet> = None;
-        if raw != "" {
-            pod_cidr.replace(IpNet::from_str(&raw).map_err(|e| {
-                Status::invalid_argument(format!("invalid CIDR given: {}", e.to_string()))
-            })?);
-        }
+        let pod_cidr = match raw.as_str() {
+            "" => None,
+            _ => Some(
+                IpNet::from_str(&raw)
+                    .map_err(|e| Status::invalid_argument(format!("invalid CIDR given: {}", e)))?,
+            ),
+        };
+
         let mut cidr = self.pod_cidr.write().await;
         *cidr = pod_cidr;
         Ok(Response::new(UpdateRuntimeConfigResponse {}))
@@ -645,24 +646,24 @@ impl RuntimeService for CriRuntimeService {
 
         Ok(Response::new(ContainerStatusResponse {
             status: Some(ContainerStatus {
-                id: container.id.to_owned(),
-                metadata: container.config.metadata.to_owned(),
-                state: container.state.to_owned(),
+                id: container.id.clone(),
+                metadata: container.config.metadata.clone(),
+                state: container.state.clone(),
                 created_at: container.created_at,
                 started_at: 0,
                 finished_at: 0,
                 exit_code: 0,
-                image: container.config.image.to_owned(),
-                image_ref: container.image_ref.to_owned(),
+                image: container.config.image.clone(),
+                image_ref: container.image_ref.clone(),
                 reason: "because I said so".to_owned(),
                 message: "hello earthlings".to_owned(),
-                labels: container.config.labels.to_owned(),
-                annotations: container.config.annotations.to_owned(),
+                labels: container.config.labels.clone(),
+                annotations: container.config.annotations.clone(),
                 mounts: vec![],
                 log_path: container
                     .log_path
-                    .to_owned()
-                    .unwrap_or(PathBuf::from(""))
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(""))
                     .into_os_string()
                     .into_string()
                     .unwrap(),
