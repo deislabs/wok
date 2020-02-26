@@ -276,9 +276,6 @@ impl RuntimeService for CriRuntimeService {
         // All of the security context stuff pretty much doesn't matter for
         // WASM, but we can revisit this as things keep evolving
 
-        // TODO(taylor): According to the RwLock docs, we should panic on failure
-        // to poison the RwLock. This also means we'd need to have handling for
-        // recovering from a poisoned RwLock, which I am leaving for later
         let mut sandboxes = self.sandboxes.write().await;
         let id = Uuid::new_v4().to_string();
         sandboxes.insert(
