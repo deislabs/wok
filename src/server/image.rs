@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use chrono::Utc;
 use tokio::sync::Mutex;
@@ -11,12 +10,12 @@ use super::grpc;
 
 use crate::docker::Reference;
 use crate::server::CriResult;
-use crate::store::{ModuleStore, ModuleStoreError};
+use crate::store::ModuleStore;
 
 /// Implement a CRI Image Service
 #[derive(Debug, Default)]
 pub struct CriImageService {
-    module_store: Arc<Mutex<ModuleStore>>,
+    module_store: Mutex<ModuleStore>,
 }
 
 impl CriImageService {
@@ -25,23 +24,12 @@ impl CriImageService {
             .await
             .expect("cannot create root directory for image service");
         CriImageService {
-            module_store: Arc::new(Mutex::new(ModuleStore::new(root_dir))),
+            module_store: Mutex::new(ModuleStore::new(root_dir).await),
         }
     }
 
     async fn pull_module(&self, module_ref: Reference) -> Result<(), failure::Error> {
-        let module_store = self.module_store.clone();
-        tokio::task::spawn_blocking(move || {
-            // turn the async lock into a spin lock
-            let mut module_store = loop {
-                if let Ok(g) = module_store.try_lock() {
-                    break g;
-                }
-            };
-            module_store.pull(&module_ref)?;
-            Result::<(), ModuleStoreError>::Ok(())
-        })
-        .await??;
+        self.module_store.lock().await.pull(&module_ref).await?;
 
         Ok(())
     }
@@ -54,7 +42,7 @@ impl grpc::image_service_server::ImageService for CriImageService {
         _request: Request<grpc::ListImagesRequest>,
     ) -> CriResult<grpc::ListImagesResponse> {
         let resp = grpc::ListImagesResponse {
-            images: self.module_store.lock().await.list().unwrap(),
+            images: self.module_store.lock().await.list().await,
         };
         Ok(Response::new(resp))
     }
@@ -70,7 +58,7 @@ impl grpc::image_service_server::ImageService for CriImageService {
             .lock()
             .await
             .list()
-            .unwrap()
+            .await
             .iter()
             .find(|i| i.id == image_id)
             .cloned();
@@ -116,10 +104,10 @@ impl grpc::image_service_server::ImageService for CriImageService {
                         .unwrap(),
                 }),
                 used_bytes: Some(grpc::UInt64Value {
-                    value: module_store.used_bytes().unwrap(),
+                    value: module_store.used_bytes().await,
                 }),
                 inodes_used: Some(grpc::UInt64Value {
-                    value: module_store.used_inodes().unwrap(),
+                    value: module_store.used_inodes().await,
                 }),
             }],
         };

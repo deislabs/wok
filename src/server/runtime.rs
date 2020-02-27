@@ -137,7 +137,7 @@ impl CriRuntimeService {
             .await
             .expect("cannot create root directory for runtime service");
         CriRuntimeService {
-            module_store: Mutex::new(ModuleStore::new(dir)),
+            module_store: Mutex::new(ModuleStore::new(dir).await),
             sandboxes: RwLock::new(BTreeMap::default()),
             containers: RwLock::new(vec![]),
             running_containers: RwLock::new(HashMap::new()),
@@ -1065,7 +1065,7 @@ mod test {
 
         let image_ref = Reference::try_from("foo/bar:baz".to_owned()).unwrap();
 
-        let module_store = ModuleStore::new(dir.path().to_path_buf());
+        let module_store = ModuleStore::new(dir.path().to_path_buf()).await;
 
         // create temp directories
         let log_dir_name = dir.path().join("testdir");
