@@ -11,4 +11,7 @@ pub use grpc::runtime_service_server::RuntimeServiceServer;
 pub use grpc::Image as Module;
 
 pub use image::CriImageService;
-pub use runtime::{CriResult, CriRuntimeService};
+pub use runtime::CriRuntimeService;
+
+/// CriResult describes a Result that has a Response<T> and a Status
+pub type CriResult<T> = std::result::Result<tonic::Response<T>, tonic::Status>;
