@@ -174,9 +174,9 @@ fn test_pull_wasm() {
 
 #[test]
 fn test_module_store_used_bytes() {
-    let mut s = ModuleStore{
+    let mut s = ModuleStore {
         root_dir: PathBuf::from("/"),
-        modules: Arc::new(RwLock::new(vec![]))
+        modules: Arc::new(RwLock::new(vec![])),
     };
     assert_eq!(0, s.used_bytes().expect("could not retrieve used_bytes"));
 
