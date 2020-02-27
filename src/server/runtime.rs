@@ -300,7 +300,9 @@ impl RuntimeService for CriRuntimeService {
         let mut sandbox_containers = self.sandbox_containers.write().await;
         sandbox_containers.insert(id.clone(), vec![]);
 
-        Ok(Response::new(grpc::RunPodSandboxResponse { pod_sandbox_id: id }))
+        Ok(Response::new(grpc::RunPodSandboxResponse {
+            pod_sandbox_id: id,
+        }))
     }
 
     async fn list_pod_sandbox(
@@ -1228,7 +1230,7 @@ mod test {
                 pod_sandbox_id: "test".to_owned(),
                 state: grpc::ContainerState::ContainerRunning as i32,
                 config: grpc::ContainerConfig {
-                    metadata: Some(ContainerMetadata {
+                    metadata: Some(grpc::ContainerMetadata {
                         attempt: 1,
                         name: "test".to_owned(),
                     }),
@@ -1245,7 +1247,7 @@ mod test {
                 pod_sandbox_id: "test2".to_owned(),
                 state: grpc::ContainerState::ContainerRunning as i32,
                 config: grpc::ContainerConfig {
-                    metadata: Some(ContainerMetadata {
+                    metadata: Some(grpc::ContainerMetadata {
                         attempt: 1,
                         name: "test2".to_owned(),
                     }),
@@ -1262,7 +1264,7 @@ mod test {
                 pod_sandbox_id: "test2".to_owned(),
                 state: grpc::ContainerState::ContainerCreated as i32,
                 config: grpc::ContainerConfig {
-                    metadata: Some(ContainerMetadata {
+                    metadata: Some(grpc::ContainerMetadata {
                         attempt: 1,
                         name: "test2".to_owned(),
                     }),
