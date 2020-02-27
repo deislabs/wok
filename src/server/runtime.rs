@@ -648,7 +648,7 @@ impl RuntimeService for CriRuntimeService {
             status: Some(ContainerStatus {
                 id: container.id.clone(),
                 metadata: container.config.metadata.clone(),
-                state: container.state.clone(),
+                state: container.state,
                 created_at: container.created_at,
                 started_at: 0,
                 finished_at: 0,
