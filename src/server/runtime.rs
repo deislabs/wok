@@ -339,7 +339,7 @@ impl RuntimeService for CriRuntimeService {
 
         // Stop all containers inside the sandbox. This forcibly terminates all containers with no grace period.
         let mut sandbox_containers = self.sandbox_containers.write().await;
-        if let Some(containers) = sandbox_containers.get_mut(&id){
+        if let Some(containers) = sandbox_containers.get_mut(&id) {
             for id in containers.drain(0..) {
                 self.stop_container(Request::new(StopContainerRequest {
                     container_id: id.clone(),
@@ -500,8 +500,14 @@ impl RuntimeService for CriRuntimeService {
 
         // add container to the store.
         let mut sandbox_containers = self.sandbox_containers.write().await;
-        sandbox_containers.entry(container.pod_sandbox_id.clone()).or_default().push(container.id.clone());
-        self.containers.write().await.insert(container.id.clone(), container);
+        sandbox_containers
+            .entry(container.pod_sandbox_id.clone())
+            .or_default()
+            .push(container.id.clone());
+        self.containers
+            .write()
+            .await
+            .insert(container.id.clone(), container);
 
         Ok(Response::new(CreateContainerResponse { container_id: id }))
     }
@@ -604,7 +610,7 @@ impl RuntimeService for CriRuntimeService {
             Some(token) => {
                 token.remove();
                 tokens.remove(&id);
-            },
+            }
             None => {
                 // Documentation seems to suggest that this is not an error case.
                 log::debug!("ID {} is not found in running containers", id)
@@ -615,7 +621,7 @@ impl RuntimeService for CriRuntimeService {
         let container = containers.get_mut(&id).unwrap();
 
         let mut sandbox_containers = self.sandbox_containers.write().await;
-        if let Some(sandbox) = sandbox_containers.get_mut(&container.pod_sandbox_id){
+        if let Some(sandbox) = sandbox_containers.get_mut(&container.pod_sandbox_id) {
             let pos = sandbox.iter().position(|id| &container.id == id).unwrap();
             sandbox.remove(pos);
         }
@@ -630,7 +636,10 @@ impl RuntimeService for CriRuntimeService {
     ) -> CriResult<ListContainersResponse> {
         let filter = req.into_inner().filter.unwrap_or_default();
         Ok(Response::new(ListContainersResponse {
-            containers: self.containers.read().await
+            containers: self
+                .containers
+                .read()
+                .await
                 .values()
                 .filter(|c| {
                     (filter.id == "" || c.id == filter.id)
@@ -969,8 +978,14 @@ mod test {
         let mut container = UserContainer::default();
         container.id = "test".to_owned();
         container.pod_sandbox_id = "1".to_owned();
-        svc.sandbox_containers.write().await.insert(container.pod_sandbox_id.clone(), vec![container.id.clone()]);
-        svc.containers.write().await.insert(container.id.clone(), container);
+        svc.sandbox_containers
+            .write()
+            .await
+            .insert(container.pod_sandbox_id.clone(), vec![container.id.clone()]);
+        svc.containers
+            .write()
+            .await
+            .insert(container.id.clone(), container);
 
         let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
@@ -1015,7 +1030,10 @@ mod test {
             },
         );
         drop(sandboxes);
-        svc.sandbox_containers.write().await.insert("test".to_owned(), vec![]);
+        svc.sandbox_containers
+            .write()
+            .await
+            .insert("test".to_owned(), vec![]);
         let req = Request::new(StopPodSandboxRequest {
             pod_sandbox_id: "test".to_owned(),
         });
@@ -1130,7 +1148,10 @@ mod test {
         res.expect("start container result");
         // We should also expect the container to be in the running state
         let containers = svc.containers.read().await;
-        assert_eq!(ContainerState::ContainerRunning as i32, containers[&id].state);
+        assert_eq!(
+            ContainerState::ContainerRunning as i32,
+            containers[&id].state
+        );
     }
 
     #[tokio::test]
@@ -1146,26 +1167,32 @@ mod test {
     async fn test_remove_container() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut containers = svc.containers.write().await;
-        containers.insert("test".to_owned(), UserContainer {
-            id: "test".to_owned(),
-            pod_sandbox_id: "test".to_owned(),
-            image_ref: "doesntmatter".to_owned(),
-            created_at: Utc::now().timestamp_nanos(),
-            state: ContainerState::ContainerRunning as i32,
-            config: ContainerConfig::default(),
-            log_path: None,
-            volumes: Vec::default(),
-        });
-        containers.insert("foo".to_owned(), UserContainer {
-            id: "foo".to_owned(),
-            pod_sandbox_id: "foo".to_owned(),
-            image_ref: "doesntmatter".to_owned(),
-            created_at: Utc::now().timestamp_nanos(),
-            state: ContainerState::ContainerRunning as i32,
-            config: ContainerConfig::default(),
-            log_path: None,
-            volumes: Vec::default(),
-        });
+        containers.insert(
+            "test".to_owned(),
+            UserContainer {
+                id: "test".to_owned(),
+                pod_sandbox_id: "test".to_owned(),
+                image_ref: "doesntmatter".to_owned(),
+                created_at: Utc::now().timestamp_nanos(),
+                state: ContainerState::ContainerRunning as i32,
+                config: ContainerConfig::default(),
+                log_path: None,
+                volumes: Vec::default(),
+            },
+        );
+        containers.insert(
+            "foo".to_owned(),
+            UserContainer {
+                id: "foo".to_owned(),
+                pod_sandbox_id: "foo".to_owned(),
+                image_ref: "doesntmatter".to_owned(),
+                created_at: Utc::now().timestamp_nanos(),
+                state: ContainerState::ContainerRunning as i32,
+                config: ContainerConfig::default(),
+                log_path: None,
+                volumes: Vec::default(),
+            },
+        );
         drop(containers);
         let req = Request::new(RemoveContainerRequest {
             container_id: "test".to_owned(),
@@ -1183,48 +1210,57 @@ mod test {
         let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
-        containers.insert("test".to_owned(), UserContainer {
-            id: "test".to_owned(),
-            pod_sandbox_id: "test".to_owned(),
-            state: ContainerState::ContainerRunning as i32,
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test".to_owned(),
-                }),
-                labels: labels.clone(),
+        containers.insert(
+            "test".to_owned(),
+            UserContainer {
+                id: "test".to_owned(),
+                pod_sandbox_id: "test".to_owned(),
+                state: ContainerState::ContainerRunning as i32,
+                config: ContainerConfig {
+                    metadata: Some(ContainerMetadata {
+                        attempt: 1,
+                        name: "test".to_owned(),
+                    }),
+                    labels: labels.clone(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
-        containers.insert("test2".to_owned(), UserContainer {
-            id: "test2".to_owned(),
-            pod_sandbox_id: "test2".to_owned(),
-            state: ContainerState::ContainerRunning as i32,
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test2".to_owned(),
-                }),
-                labels: HashMap::default(),
+        );
+        containers.insert(
+            "test2".to_owned(),
+            UserContainer {
+                id: "test2".to_owned(),
+                pod_sandbox_id: "test2".to_owned(),
+                state: ContainerState::ContainerRunning as i32,
+                config: ContainerConfig {
+                    metadata: Some(ContainerMetadata {
+                        attempt: 1,
+                        name: "test2".to_owned(),
+                    }),
+                    labels: HashMap::default(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
-        containers.insert("test3".to_owned(), UserContainer {
-            id: "test3".to_owned(),
-            pod_sandbox_id: "test2".to_owned(),
-            state: ContainerState::ContainerCreated as i32,
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test2".to_owned(),
-                }),
-                labels: HashMap::default(),
+        );
+        containers.insert(
+            "test3".to_owned(),
+            UserContainer {
+                id: "test3".to_owned(),
+                pod_sandbox_id: "test2".to_owned(),
+                state: ContainerState::ContainerCreated as i32,
+                config: ContainerConfig {
+                    metadata: Some(ContainerMetadata {
+                        attempt: 1,
+                        name: "test2".to_owned(),
+                    }),
+                    labels: HashMap::default(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
+        );
         drop(containers);
         let req = Request::new(ListContainersRequest {
             filter: Some(ContainerFilter::default()),
@@ -1286,18 +1322,21 @@ mod test {
     async fn test_container_status() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut containers = svc.containers.write().await;
-        containers.insert("test".to_owned(), UserContainer {
-            id: "test".to_owned(),
-            pod_sandbox_id: "test".to_owned(),
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test".to_owned(),
-                }),
+        containers.insert(
+            "test".to_owned(),
+            UserContainer {
+                id: "test".to_owned(),
+                pod_sandbox_id: "test".to_owned(),
+                config: ContainerConfig {
+                    metadata: Some(ContainerMetadata {
+                        attempt: 1,
+                        name: "test".to_owned(),
+                    }),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
+        );
         drop(containers);
         let req = Request::new(ContainerStatusRequest {
             container_id: "test".to_owned(),
@@ -1320,19 +1359,22 @@ mod test {
         let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
-        containers.insert("test".to_owned(), UserContainer {
-            id: "test".to_owned(),
-            pod_sandbox_id: "test".to_owned(),
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test".to_owned(),
-                }),
-                labels: labels.clone(),
+        containers.insert(
+            "test".to_owned(),
+            UserContainer {
+                id: "test".to_owned(),
+                pod_sandbox_id: "test".to_owned(),
+                config: ContainerConfig {
+                    metadata: Some(ContainerMetadata {
+                        attempt: 1,
+                        name: "test".to_owned(),
+                    }),
+                    labels: labels.clone(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
+        );
         drop(containers);
         let req = Request::new(ContainerStatsRequest {
             container_id: "test".to_owned(),
@@ -1369,45 +1411,54 @@ mod test {
         let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
-        containers.insert("test".to_owned(), UserContainer {
-            id: "test".to_owned(),
-            pod_sandbox_id: "test".to_owned(),
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test".to_owned(),
-                }),
-                labels: labels.clone(),
+        containers.insert(
+            "test".to_owned(),
+            UserContainer {
+                id: "test".to_owned(),
+                pod_sandbox_id: "test".to_owned(),
+                config: ContainerConfig {
+                    metadata: Some(ContainerMetadata {
+                        attempt: 1,
+                        name: "test".to_owned(),
+                    }),
+                    labels: labels.clone(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
-        containers.insert("test2".to_owned(), UserContainer {
-            id: "test2".to_owned(),
-            pod_sandbox_id: "test2".to_owned(),
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test2".to_owned(),
-                }),
-                labels: HashMap::default(),
+        );
+        containers.insert(
+            "test2".to_owned(),
+            UserContainer {
+                id: "test2".to_owned(),
+                pod_sandbox_id: "test2".to_owned(),
+                config: ContainerConfig {
+                    metadata: Some(ContainerMetadata {
+                        attempt: 1,
+                        name: "test2".to_owned(),
+                    }),
+                    labels: HashMap::default(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
-        containers.insert("test3".to_owned(), UserContainer {
-            id: "test3".to_owned(),
-            pod_sandbox_id: "test2".to_owned(),
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test2".to_owned(),
-                }),
-                labels: HashMap::default(),
+        );
+        containers.insert(
+            "test3".to_owned(),
+            UserContainer {
+                id: "test3".to_owned(),
+                pod_sandbox_id: "test2".to_owned(),
+                config: ContainerConfig {
+                    metadata: Some(ContainerMetadata {
+                        attempt: 1,
+                        name: "test2".to_owned(),
+                    }),
+                    labels: HashMap::default(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
+        );
         drop(containers);
         let req = Request::new(ListContainerStatsRequest {
             filter: Some(ContainerStatsFilter::default()),
