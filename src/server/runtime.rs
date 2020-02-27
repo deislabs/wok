@@ -16,7 +16,6 @@ use uuid::Uuid;
 use super::grpc::{runtime_service_server::RuntimeService, *};
 use crate::docker::Reference;
 use crate::store::ModuleStore;
-use crate::util;
 use crate::wasm::wascc::*;
 use crate::wasm::{Result, Runtime};
 
@@ -133,8 +132,10 @@ pub struct CriRuntimeService {
 }
 
 impl CriRuntimeService {
-    pub fn new(dir: PathBuf, pod_cidr: Option<IpNet>) -> Self {
-        util::ensure_root_dir(&dir).expect("cannot create root directory for runtime service");
+    pub async fn new(dir: PathBuf, pod_cidr: Option<IpNet>) -> Self {
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("cannot create root directory for runtime service");
         CriRuntimeService {
             module_store: Mutex::new(ModuleStore::new(dir)),
             sandboxes: RwLock::new(BTreeMap::default()),
@@ -459,7 +460,7 @@ impl RuntimeService for CriRuntimeService {
             .root_dir()
             .join("containers")
             .join(&id);
-        std::fs::create_dir_all(&container_root_dir)?;
+        tokio::fs::create_dir_all(&container_root_dir).await?;
 
         // generate volume mounts.
         for mount in container_config.mounts {
@@ -524,9 +525,9 @@ impl RuntimeService for CriRuntimeService {
         // Get the WASM data from the image
         // TODO: handle error
         let image_ref =
-            Reference::try_from(&container.image_ref).expect("Failed to parse image_ref");
+            Reference::try_from(container.image_ref.clone()).expect("Failed to parse image_ref");
         let module_path = module_store
-            .pull_file_path(image_ref)
+            .pull_file_path(&image_ref)
             .into_os_string()
             .into_string()
             .unwrap();
@@ -557,14 +558,20 @@ impl RuntimeService for CriRuntimeService {
                 running_containers.insert(container.id.clone(), token);
             }
             RuntimeHandler::WASI => {
-                let runtime = crate::wasm::WasiRuntime::new(
-                    module_path,
-                    env,
-                    container.config.args.clone(),
-                    // TODO: dirs
-                    HashMap::new(),
-                    container.log_path.as_ref(),
-                )
+                let args = container.config.args.clone();
+                let log_path = container.log_path.clone();
+                let runtime = tokio::task::spawn_blocking(move || {
+                    crate::wasm::WasiRuntime::new(
+                        module_path,
+                        env,
+                        args,
+                        // TODO: dirs
+                        HashMap::new(),
+                        log_path.as_ref(),
+                    )
+                })
+                .await
+                .expect("Failed to create new thread for creating runtime")
                 .expect("Creating runtime failed");
 
                 let token = RuntimeContainer::new(runtime).start();
@@ -756,7 +763,7 @@ mod test {
 
     #[tokio::test]
     async fn test_version() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let res = svc.version(Request::new(VersionRequest::default())).await;
         assert_eq!(
             res.as_ref()
@@ -775,7 +782,7 @@ mod test {
 
     #[tokio::test]
     async fn test_update_runtime_config() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let _ = svc
             .update_runtime_config(Request::new(UpdateRuntimeConfigRequest {
                 runtime_config: Some(RuntimeConfig {
@@ -795,7 +802,7 @@ mod test {
 
     #[tokio::test]
     async fn test_status() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let res = svc
             .status(Request::new(StatusRequest::default()))
             .await
@@ -842,7 +849,7 @@ mod test {
 
     #[tokio::test]
     async fn test_list_pod_sandbox() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut sandboxes = svc.sandboxes.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
@@ -918,7 +925,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pod_sandbox_status() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut sandboxes = svc.sandboxes.write().await;
         let sandbox = PodSandbox {
             id: "1".to_owned(),
@@ -949,7 +956,7 @@ mod test {
 
     #[tokio::test]
     async fn test_remove_pod_sandbox() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut container = UserContainer::default();
         container.pod_sandbox_id = "1".to_owned();
         svc.containers.write().await.push(container);
@@ -981,7 +988,7 @@ mod test {
 
     #[tokio::test]
     async fn test_stop_pod_sandbox() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
             "test".to_owned(),
@@ -1014,7 +1021,7 @@ mod test {
 
     #[tokio::test]
     async fn test_create_container() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
             "test".to_owned(),
@@ -1054,20 +1061,15 @@ mod test {
     async fn test_start_container() {
         // Put every file in a temp dir so it's automatically cleaned up
         let dir = tempdir().expect("Couldn't create temp directory");
-        let svc = CriRuntimeService::new(dir.path().to_owned(), None);
+        let svc = CriRuntimeService::new(dir.path().to_owned(), None).await;
 
-        let image_ref = Reference {
-            whole: "foo/bar:baz",
-            registry: "foo",
-            repo: "bar",
-            tag: "baz",
-        };
+        let image_ref = Reference::try_from("foo/bar:baz".to_owned()).unwrap();
 
         let module_store = ModuleStore::new(dir.path().to_path_buf());
 
         // create temp directories
         let log_dir_name = dir.path().join("testdir");
-        let image_file = module_store.pull_file_path(image_ref);
+        let image_file = module_store.pull_file_path(&image_ref);
         // log directory
         tokio::fs::create_dir_all(&log_dir_name)
             .await
@@ -1093,7 +1095,7 @@ mod test {
             let mut containers = svc.containers.write().await;
             container.pod_sandbox_id = sandbox.id.clone();
             container.log_path = Some(log_dir_name);
-            container.image_ref = image_ref.whole.to_owned();
+            container.image_ref = image_ref.into();
             let container_id = container.id.clone();
 
             containers.push(container);
@@ -1114,7 +1116,7 @@ mod test {
 
     #[tokio::test]
     async fn test_stop_container() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let req = Request::new(StopContainerRequest::default());
         let res = svc.stop_container(req).await;
         // We expect an empty response object
@@ -1123,7 +1125,7 @@ mod test {
 
     #[tokio::test]
     async fn test_remove_container() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut containers = svc.containers.write().await;
         containers.push(UserContainer {
             id: "test".to_owned(),
@@ -1158,7 +1160,7 @@ mod test {
 
     #[tokio::test]
     async fn test_list_containers() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
@@ -1263,7 +1265,7 @@ mod test {
 
     #[tokio::test]
     async fn test_container_status() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut containers = svc.containers.write().await;
         containers.push(UserContainer {
             id: "test".to_owned(),
@@ -1295,7 +1297,7 @@ mod test {
 
     #[tokio::test]
     async fn test_container_stats() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
@@ -1344,7 +1346,7 @@ mod test {
 
     #[tokio::test]
     async fn test_list_container_stats() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
@@ -1433,7 +1435,7 @@ mod test {
 
     #[tokio::test]
     async fn test_run_pod_sandbox() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut sandbox_req = RunPodSandboxRequest::default();
         sandbox_req.runtime_handler = RuntimeHandler::WASI.to_string();
 
@@ -1454,7 +1456,7 @@ mod test {
 
     #[tokio::test]
     async fn test_create_and_list() {
-        let svc = CriRuntimeService::new(PathBuf::from(""), None);
+        let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut sandbox_req = RunPodSandboxRequest::default();
         sandbox_req.runtime_handler = RuntimeHandler::WASI.to_string();
 

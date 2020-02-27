@@ -92,15 +92,15 @@ impl ModuleStore {
         Ok(modules.remove(i))
     }
 
-    pub fn pull(&mut self, reference: Reference) -> Result<(), ModuleStoreError> {
+    pub fn pull(&mut self, reference: &Reference) -> Result<(), ModuleStoreError> {
         let pull_path = self.pull_path(reference);
         std::fs::create_dir_all(&pull_path).or(Err(ModuleStoreError::CannotPullModule))?;
-        pull_wasm(reference, self.pull_file_path(reference))?;
-        let attrs = fs::metadata(self.pull_file_path(reference))
+        pull_wasm(&reference, self.pull_file_path(&reference))?;
+        let attrs = fs::metadata(self.pull_file_path(&reference))
             .or(Err(ModuleStoreError::CannotFetchModuleMetadata))?;
         // TODO(bacongobbler): fetch image information from the module
         let m = Module {
-            id: String::from(reference.whole),
+            id: reference.whole().to_owned(),
             repo_digests: vec![],
             repo_tags: vec![],
             size: attrs.len(),
@@ -130,19 +130,22 @@ impl ModuleStore {
         Ok(modules.len() as u64)
     }
 
-    pub(crate) fn pull_path(&self, r: Reference) -> PathBuf {
-        self.root_dir.join(r.registry).join(r.repo).join(r.tag)
+    pub(crate) fn pull_path(&self, r: &Reference) -> PathBuf {
+        self.root_dir
+            .join(r.registry())
+            .join(r.repository())
+            .join(r.tag())
     }
 
-    pub(crate) fn pull_file_path(&self, r: Reference) -> PathBuf {
+    pub(crate) fn pull_file_path(&self, r: &Reference) -> PathBuf {
         self.pull_path(r).join("module.wasm")
     }
 }
 
-fn pull_wasm(reference: Reference, fp: PathBuf) -> Result<(), ModuleStoreError> {
+fn pull_wasm(reference: &Reference, fp: PathBuf) -> Result<(), ModuleStoreError> {
     let filepath = fp.to_str().ok_or(ModuleStoreError::InvalidPullPath)?;
-    println!("pulling {} into {}", reference.whole, filepath);
-    let c_ref = CString::new(reference.whole).or(Err(ModuleStoreError::InvalidReference))?;
+    println!("pulling {} into {}", reference.whole(), filepath);
+    let c_ref = CString::new(reference.whole()).or(Err(ModuleStoreError::InvalidReference))?;
     let c_file = CString::new(filepath).or(Err(ModuleStoreError::InvalidPullPath))?;
 
     let go_str_ref = GoString {
@@ -168,15 +171,15 @@ fn test_pull_wasm() {
     // this is a public registry, so this test is both making sure the library is working,
     // as well as ensuring the registry is publicly accessible
     let module = "webassembly.azurecr.io/hello-wasm:v1".to_owned();
-    let r = Reference::try_from(&module).expect("Failed to parse reference");
-    pull_wasm(r, PathBuf::from("target/pulled.wasm")).unwrap();
+    let r = Reference::try_from(module).expect("Failed to parse reference");
+    pull_wasm(&r, PathBuf::from("target/pulled.wasm")).unwrap();
 }
 
 #[test]
 fn test_module_store_used_bytes() {
-    let mut s = ModuleStore{
+    let mut s = ModuleStore {
         root_dir: PathBuf::from("/"),
-        modules: Arc::new(RwLock::new(vec![]))
+        modules: Arc::new(RwLock::new(vec![])),
     };
     assert_eq!(0, s.used_bytes().expect("could not retrieve used_bytes"));
 
