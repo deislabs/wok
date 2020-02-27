@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 // RuntimeService is converted to a package runtime_service_server
 use super::grpc::{self, runtime_service_server::RuntimeService};
+use super::CriResult;
 use crate::docker::Reference;
 use crate::store::ModuleStore;
 use crate::util;
@@ -32,9 +33,6 @@ const API_VERSION: &str = "0.1.0";
 /// The key is used to verify that the WASM that is retrieved is signed by the correct
 /// signing key.
 const ACTOR_KEY_ANNOTATION: &str = "deislabs.io/actor-key";
-
-/// CriResult describes a Result that has a Response<T> and a Status
-pub type CriResult<T> = std::result::Result<Response<T>, Status>;
 
 /// UserContainer is an internal mapping between the Container and the ContainerConfig objects provided by the kubelet.
 /// We use this to map between what the CRI requested and what we created. (e.g. the volume mount mappings between
@@ -121,14 +119,19 @@ impl From<grpc::PodSandbox> for grpc::PodSandboxStatus {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+struct UserSandbox {
+    inner: grpc::PodSandbox,
+    running_containers: Vec<String>,
+}
+
 /// Implement a CRI runtime service.
 #[derive(Debug, Default)]
 pub struct CriRuntimeService {
     module_store: Mutex<ModuleStore>,
     // NOTE: we could replace this with evmap or crossbeam
-    sandboxes: RwLock<BTreeMap<String, grpc::PodSandbox>>,
+    sandboxes: RwLock<BTreeMap<String, UserSandbox>>,
     containers: RwLock<HashMap<String, UserContainer>>,
-    sandbox_containers: RwLock<HashMap<String, Vec<String>>>,
     running_containers: RwLock<HashMap<String, ContainerCancellationToken>>,
     pod_cidr: RwLock<Option<IpNet>>,
 }
@@ -140,7 +143,6 @@ impl CriRuntimeService {
             module_store: Mutex::new(ModuleStore::new(dir)),
             sandboxes: RwLock::new(BTreeMap::default()),
             containers: RwLock::new(HashMap::new()),
-            sandbox_containers: RwLock::new(HashMap::new()),
             running_containers: RwLock::new(HashMap::new()),
             pod_cidr: RwLock::new(pod_cidr),
         }
@@ -286,19 +288,19 @@ impl RuntimeService for CriRuntimeService {
         let id = Uuid::new_v4().to_string();
         sandboxes.insert(
             id.clone(),
-            grpc::PodSandbox {
-                id: id.clone(),
-                metadata: sandbox_conf.metadata,
-                state: grpc::PodSandboxState::SandboxReady as i32,
-                created_at: Utc::now().timestamp_nanos(),
-                labels: sandbox_conf.labels,
-                annotations: sandbox_conf.annotations,
-                runtime_handler: handler.to_string(),
+            UserSandbox {
+                inner: grpc::PodSandbox {
+                    id: id.clone(),
+                    metadata: sandbox_conf.metadata,
+                    state: grpc::PodSandboxState::SandboxReady as i32,
+                    created_at: Utc::now().timestamp_nanos(),
+                    labels: sandbox_conf.labels,
+                    annotations: sandbox_conf.annotations,
+                    runtime_handler: handler.to_string(),
+                },
+                running_containers: vec![],
             },
         );
-
-        let mut sandbox_containers = self.sandbox_containers.write().await;
-        sandbox_containers.insert(id.clone(), vec![]);
 
         Ok(Response::new(grpc::RunPodSandboxResponse {
             pod_sandbox_id: id,
@@ -316,6 +318,7 @@ impl RuntimeService for CriRuntimeService {
                 .read()
                 .await
                 .values()
+                .map(|s| &s.inner)
                 .filter(|sand| {
                     (filter.id == "" || sand.id == filter.id)
                         && filter
@@ -344,18 +347,15 @@ impl RuntimeService for CriRuntimeService {
         };
 
         // Stop all containers inside the sandbox. This forcibly terminates all containers with no grace period.
-        let mut sandbox_containers = self.sandbox_containers.write().await;
-        if let Some(containers) = sandbox_containers.get_mut(&id) {
-            for id in containers.drain(0..) {
-                self.stop_container(Request::new(grpc::StopContainerRequest {
-                    container_id: id.clone(),
-                    timeout: 0,
-                }));
-            }
+        for id in sandbox.running_containers.drain(0..) {
+            self.stop_container(Request::new(grpc::StopContainerRequest {
+                container_id: id.clone(),
+                timeout: 0,
+            }));
         }
 
         // mark the pod sandbox as not ready, preventing future container creation.
-        sandbox.state = grpc::PodSandboxState::SandboxNotready as i32;
+        sandbox.inner.state = grpc::PodSandboxState::SandboxNotready as i32;
 
         // TODO(bacongobbler): when networking is implemented, here is where we should tear down the network.
 
@@ -377,7 +377,7 @@ impl RuntimeService for CriRuntimeService {
         };
 
         // return an error if the sandbox container is still running.
-        if sandbox.state == grpc::PodSandboxState::SandboxReady as i32 {
+        if sandbox.inner.state == grpc::PodSandboxState::SandboxReady as i32 {
             return Err(Status::failed_precondition(format!(
                 "Sandbox container {} is not fully stopped",
                 id
@@ -388,14 +388,10 @@ impl RuntimeService for CriRuntimeService {
         // network namespace is not closed yet.
 
         // remove all containers inside the sandbox.
-        let mut sandbox_containers = self.sandbox_containers.write().await;
-        if let Some(container_ids) = sandbox_containers.get(id) {
-            for container_id in container_ids {
-                self.remove_container(Request::new(grpc::RemoveContainerRequest {
-                    container_id: container_id.clone(),
-                }));
-            }
-            sandbox_containers.remove(id);
+        for container_id in sandbox.running_containers.iter() {
+            self.remove_container(Request::new(grpc::RemoveContainerRequest {
+                container_id: container_id.clone(),
+            }));
         }
 
         // remove the sandbox.
@@ -421,7 +417,7 @@ impl RuntimeService for CriRuntimeService {
             }
         };
 
-        let status = grpc::PodSandboxStatus::from(sandbox.clone());
+        let status = grpc::PodSandboxStatus::from(sandbox.inner.clone());
 
         // TODO(bacongobbler): report back status on the network and linux-specific sandbox status here (when implemented)
 
@@ -505,10 +501,16 @@ impl RuntimeService for CriRuntimeService {
         }
 
         // add container to the store.
-        let mut sandbox_containers = self.sandbox_containers.write().await;
-        sandbox_containers
-            .entry(container.pod_sandbox_id.clone())
-            .or_default()
+        let mut sandboxes = self.sandboxes.write().await;
+        sandboxes
+            .get_mut(&container.pod_sandbox_id)
+            .ok_or_else(|| {
+                Status::not_found(format!(
+                    "Could not found sandbox with id '{}'",
+                    &container.pod_sandbox_id
+                ))
+            })?
+            .running_containers
             .push(container.id.clone());
         self.containers
             .write()
@@ -532,9 +534,10 @@ impl RuntimeService for CriRuntimeService {
             .get_mut(&id)
             .ok_or_else(|| Status::not_found("Container not found"))?;
         let sandboxes = self.sandboxes.read().await;
-        let sandbox = sandboxes
+        let sandbox = &sandboxes
             .get(&container.pod_sandbox_id)
-            .ok_or_else(|| Status::not_found("Sandbox not found"))?;
+            .ok_or_else(|| Status::not_found("Sandbox not found"))?
+            .inner;
 
         let runtime = RuntimeHandler::from_string(&sandbox.runtime_handler)
             .map_err(|_| Status::invalid_argument("Invalid runtime handler"))?;
@@ -628,11 +631,17 @@ impl RuntimeService for CriRuntimeService {
         let mut containers = self.containers.write().await;
         let container = containers.get_mut(&id).unwrap();
 
-        let mut sandbox_containers = self.sandbox_containers.write().await;
-        if let Some(sandbox) = sandbox_containers.get_mut(&container.pod_sandbox_id) {
-            let pos = sandbox.iter().position(|id| &container.id == id).unwrap();
-            sandbox.remove(pos);
+        let mut sandboxes = self.sandboxes.write().await;
+        if let Some(sandbox) = sandboxes.get_mut(&container.pod_sandbox_id) {
+            let pos = sandbox
+                .running_containers
+                .iter()
+                .position(|id| &container.id == id)
+                .unwrap();
+            sandbox.running_containers.remove(pos);
         }
+        //TODO(rylev): handle error of there not being a sandbox
+
         containers.remove(&id);
 
         Ok(Response::new(grpc::RemoveContainerResponse {}))
@@ -883,27 +892,36 @@ mod test {
         labels.insert("test1".to_owned(), "testing".to_owned());
         sandboxes.insert(
             "test".to_owned(),
-            grpc::PodSandbox {
-                id: "test".to_owned(),
-                state: grpc::PodSandboxState::SandboxReady as i32,
-                labels: labels.clone(),
-                ..Default::default()
+            UserSandbox {
+                inner: grpc::PodSandbox {
+                    id: "test".to_owned(),
+                    state: grpc::PodSandboxState::SandboxReady as i32,
+                    labels: labels.clone(),
+                    ..Default::default()
+                },
+                running_containers: vec![],
             },
         );
         sandboxes.insert(
             "test2".to_owned(),
-            grpc::PodSandbox {
-                id: "test2".to_owned(),
-                state: grpc::PodSandboxState::SandboxReady as i32,
-                ..Default::default()
+            UserSandbox {
+                inner: grpc::PodSandbox {
+                    id: "test2".to_owned(),
+                    state: grpc::PodSandboxState::SandboxReady as i32,
+                    ..Default::default()
+                },
+                running_containers: vec![],
             },
         );
         sandboxes.insert(
             "test3".to_owned(),
-            grpc::PodSandbox {
-                id: "test3".to_owned(),
-                state: grpc::PodSandboxState::SandboxNotready as i32,
-                ..Default::default()
+            UserSandbox {
+                inner: grpc::PodSandbox {
+                    id: "test3".to_owned(),
+                    state: grpc::PodSandboxState::SandboxNotready as i32,
+                    ..Default::default()
+                },
+                running_containers: vec![],
             },
         );
         drop(sandboxes);
@@ -955,16 +973,19 @@ mod test {
     async fn test_pod_sandbox_status() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None);
         let mut sandboxes = svc.sandboxes.write().await;
-        let sandbox = grpc::PodSandbox {
-            id: "1".to_owned(),
-            metadata: None,
-            state: grpc::PodSandboxState::SandboxNotready as i32,
-            created_at: Utc::now().timestamp_nanos(),
-            labels: HashMap::new(),
-            annotations: HashMap::new(),
-            runtime_handler: RuntimeHandler::WASI.to_string(),
+        let sandbox = UserSandbox {
+            inner: grpc::PodSandbox {
+                id: "1".to_owned(),
+                metadata: None,
+                state: grpc::PodSandboxState::SandboxNotready as i32,
+                created_at: Utc::now().timestamp_nanos(),
+                labels: HashMap::new(),
+                annotations: HashMap::new(),
+                runtime_handler: RuntimeHandler::WASI.to_string(),
+            },
+            running_containers: vec![],
         };
-        sandboxes.insert(sandbox.id.clone(), sandbox);
+        sandboxes.insert(sandbox.inner.id.clone(), sandbox);
         drop(sandboxes);
         let req = Request::new(grpc::PodSandboxStatusRequest {
             pod_sandbox_id: "1".to_owned(),
@@ -988,26 +1009,26 @@ mod test {
         let mut container = UserContainer::default();
         container.id = "test".to_owned();
         container.pod_sandbox_id = "1".to_owned();
-        svc.sandbox_containers
-            .write()
-            .await
-            .insert(container.pod_sandbox_id.clone(), vec![container.id.clone()]);
+        let container_id = container.id.clone();
         svc.containers
             .write()
             .await
-            .insert(container.id.clone(), container);
+            .insert(container_id.clone(), container);
 
         let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
             "1".to_owned(),
-            grpc::PodSandbox {
-                id: "1".to_owned(),
-                metadata: None,
-                state: grpc::PodSandboxState::SandboxNotready as i32,
-                created_at: Utc::now().timestamp_nanos(),
-                labels: HashMap::new(),
-                annotations: HashMap::new(),
-                runtime_handler: RuntimeHandler::WASI.to_string(),
+            UserSandbox {
+                inner: grpc::PodSandbox {
+                    id: "1".to_owned(),
+                    metadata: None,
+                    state: grpc::PodSandboxState::SandboxNotready as i32,
+                    created_at: Utc::now().timestamp_nanos(),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    runtime_handler: RuntimeHandler::WASI.to_string(),
+                },
+                running_containers: vec![container_id],
             },
         );
         drop(sandboxes);
@@ -1020,7 +1041,7 @@ mod test {
         // TODO(bacongobbler): un-comment this once remove_container() has been implemented
         //assert_eq!(0, svc.containers.read().unwrap().len());
 
-        assert_eq!(0, svc.sandboxes.read().await.values().cloned().len());
+        assert_eq!(0, svc.sandboxes.read().await.values().len());
     }
 
     #[tokio::test]
@@ -1029,22 +1050,20 @@ mod test {
         let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
             "test".to_owned(),
-            grpc::PodSandbox {
-                id: "test".to_owned(),
-                metadata: None,
-                state: grpc::PodSandboxState::SandboxReady as i32,
-                created_at: Utc::now().timestamp_nanos(),
-                labels: HashMap::new(),
-                annotations: HashMap::new(),
-                runtime_handler: RuntimeHandler::WASI.to_string(),
+            UserSandbox {
+                inner: grpc::PodSandbox {
+                    id: "test".to_owned(),
+                    metadata: None,
+                    state: grpc::PodSandboxState::SandboxReady as i32,
+                    created_at: Utc::now().timestamp_nanos(),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    runtime_handler: RuntimeHandler::WASI.to_string(),
+                },
+                running_containers: vec![],
             },
         );
         drop(sandboxes);
-
-        svc.sandbox_containers
-            .write()
-            .await
-            .insert("test".to_owned(), vec![]);
         let req = Request::new(grpc::StopPodSandboxRequest {
             pod_sandbox_id: "test".to_owned(),
         });
@@ -1067,14 +1086,17 @@ mod test {
         let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
             "test".to_owned(),
-            grpc::PodSandbox {
-                id: "test".to_owned(),
-                metadata: None,
-                state: grpc::PodSandboxState::SandboxReady as i32,
-                created_at: Utc::now().timestamp_nanos(),
-                labels: HashMap::new(),
-                annotations: HashMap::new(),
-                runtime_handler: RuntimeHandler::WASI.to_string(),
+            UserSandbox {
+                inner: grpc::PodSandbox {
+                    id: "test".to_owned(),
+                    metadata: None,
+                    state: grpc::PodSandboxState::SandboxReady as i32,
+                    created_at: Utc::now().timestamp_nanos(),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    runtime_handler: RuntimeHandler::WASI.to_string(),
+                },
+                running_containers: vec![],
             },
         );
         drop(sandboxes);
@@ -1149,7 +1171,13 @@ mod test {
 
             // write sandbox
             let mut sandboxes = svc.sandboxes.write().await;
-            sandboxes.insert(sandbox.id.clone(), sandbox);
+            sandboxes.insert(
+                sandbox.id.clone(),
+                UserSandbox {
+                    inner: sandbox,
+                    running_containers: vec![],
+                },
+            );
             container_id
         };
 
