@@ -13,7 +13,7 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 // RuntimeService is converted to a package runtime_service_server
-use super::grpc::{runtime_service_server::RuntimeService, *};
+use super::grpc::{self, runtime_service_server::RuntimeService};
 use crate::docker::Reference;
 use crate::store::ModuleStore;
 use crate::wasm::wascc::*;
@@ -51,7 +51,7 @@ pub struct UserContainer {
     /// the container's current state.
     state: i32,
     /// the CRI container config.
-    config: ContainerConfig,
+    config: grpc::ContainerConfig,
     /// Absolute path for the container to store the logs (STDOUT and STDERR) on the host.
     ///
     /// If the log_path is None, logging is disabled, either because the sandbox or the container did not specify a log path.
@@ -64,12 +64,12 @@ pub struct UserContainer {
     ///     volumes = vec![Mount{container_path: "/app", host_path: "volumes/aaaa-bbbb-cccc-dddd", ...}]
     ///     config.mounts[0].container_path = "/app"
     ///     config.mounts[0].host_path = "/tmp/app"
-    volumes: Vec<Mount>,
+    volumes: Vec<grpc::Mount>,
 }
 
-impl From<UserContainer> for Container {
+impl From<UserContainer> for grpc::Container {
     fn from(item: UserContainer) -> Self {
-        Container {
+        grpc::Container {
             id: item.id,
             pod_sandbox_id: item.pod_sandbox_id,
             image: item.config.image,
@@ -83,10 +83,10 @@ impl From<UserContainer> for Container {
     }
 }
 
-impl From<UserContainer> for ContainerStats {
+impl From<UserContainer> for grpc::ContainerStats {
     fn from(item: UserContainer) -> Self {
-        ContainerStats {
-            attributes: Some(ContainerAttributes {
+        grpc::ContainerStats {
+            attributes: Some(grpc::ContainerAttributes {
                 id: item.id,
                 metadata: item.config.metadata,
                 labels: item.config.labels,
@@ -104,9 +104,9 @@ impl From<UserContainer> for ContainerStats {
     }
 }
 
-impl From<PodSandbox> for PodSandboxStatus {
-    fn from(item: PodSandbox) -> Self {
-        PodSandboxStatus {
+impl From<grpc::PodSandbox> for grpc::PodSandboxStatus {
+    fn from(item: grpc::PodSandbox) -> Self {
+        grpc::PodSandboxStatus {
             id: item.id,
             metadata: item.metadata,
             created_at: item.created_at,
@@ -125,8 +125,9 @@ impl From<PodSandbox> for PodSandboxStatus {
 pub struct CriRuntimeService {
     module_store: Mutex<ModuleStore>,
     // NOTE: we could replace this with evmap or crossbeam
-    sandboxes: RwLock<BTreeMap<String, PodSandbox>>,
-    containers: RwLock<Vec<UserContainer>>,
+    sandboxes: RwLock<BTreeMap<String, grpc::PodSandbox>>,
+    containers: RwLock<HashMap<String, UserContainer>>,
+    sandbox_containers: RwLock<HashMap<String, Vec<String>>>,
     running_containers: RwLock<HashMap<String, ContainerCancellationToken>>,
     pod_cidr: RwLock<Option<IpNet>>,
 }
@@ -139,7 +140,8 @@ impl CriRuntimeService {
         CriRuntimeService {
             module_store: Mutex::new(ModuleStore::new(dir).await),
             sandboxes: RwLock::new(BTreeMap::default()),
-            containers: RwLock::new(vec![]),
+            containers: RwLock::new(HashMap::new()),
+            sandbox_containers: RwLock::new(HashMap::new()),
             running_containers: RwLock::new(HashMap::new()),
             pod_cidr: RwLock::new(pod_cidr),
         }
@@ -181,9 +183,12 @@ impl Default for RuntimeHandler {
 
 #[tonic::async_trait]
 impl RuntimeService for CriRuntimeService {
-    async fn version(&self, req: Request<VersionRequest>) -> CriResult<VersionResponse> {
+    async fn version(
+        &self,
+        req: Request<grpc::VersionRequest>,
+    ) -> CriResult<grpc::VersionResponse> {
         log::info!("Version request from API version {:?}", req);
-        Ok(Response::new(VersionResponse {
+        Ok(Response::new(grpc::VersionResponse {
             version: API_VERSION.to_string(),
             runtime_name: env!("CARGO_PKG_NAME").to_string(),
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -195,8 +200,8 @@ impl RuntimeService for CriRuntimeService {
 
     async fn update_runtime_config(
         &self,
-        req: Request<UpdateRuntimeConfigRequest>,
-    ) -> CriResult<UpdateRuntimeConfigResponse> {
+        req: Request<grpc::UpdateRuntimeConfigRequest>,
+    ) -> CriResult<grpc::UpdateRuntimeConfigResponse> {
         let raw = req
             .into_inner()
             .runtime_config
@@ -214,10 +219,10 @@ impl RuntimeService for CriRuntimeService {
 
         let mut cidr = self.pod_cidr.write().await;
         *cidr = pod_cidr;
-        Ok(Response::new(UpdateRuntimeConfigResponse {}))
+        Ok(Response::new(grpc::UpdateRuntimeConfigResponse {}))
     }
 
-    async fn status(&self, req: Request<StatusRequest>) -> CriResult<StatusResponse> {
+    async fn status(&self, req: Request<grpc::StatusRequest>) -> CriResult<grpc::StatusResponse> {
         let mut extra_info = HashMap::new();
         if req.into_inner().verbose {
             extra_info.insert(
@@ -230,14 +235,14 @@ impl RuntimeService for CriRuntimeService {
             );
         }
 
-        Ok(Response::new(StatusResponse {
-            status: Some(RuntimeStatus {
+        Ok(Response::new(grpc::StatusResponse {
+            status: Some(grpc::RuntimeStatus {
                 conditions: vec![
                     // There isn't anything else to change on these right now,
                     // so keep them hard coded. If we start needing to update
                     // these (such as with networking) or add our own arbitrary
                     // conditions, we can move them into the struct
-                    RuntimeCondition {
+                    grpc::RuntimeCondition {
                         r#type: "RuntimeReady".to_owned(),
                         status: true,
                         // NOTE: We should make these reasons an enum once we
@@ -245,7 +250,7 @@ impl RuntimeService for CriRuntimeService {
                         reason: "RuntimeStarted".to_owned(),
                         message: "Runtime has been started and is ready to run modules".to_owned(),
                     },
-                    RuntimeCondition {
+                    grpc::RuntimeCondition {
                         r#type: "NetworkReady".to_owned(),
                         status: false, // False until we figure out networking support
                         reason: "Unimplemented".to_owned(),
@@ -259,8 +264,8 @@ impl RuntimeService for CriRuntimeService {
 
     async fn run_pod_sandbox(
         &self,
-        req: Request<RunPodSandboxRequest>,
-    ) -> CriResult<RunPodSandboxResponse> {
+        req: Request<grpc::RunPodSandboxRequest>,
+    ) -> CriResult<grpc::RunPodSandboxResponse> {
         let sandbox_req = req.into_inner();
         let sandbox_conf = sandbox_req
             .config
@@ -282,25 +287,31 @@ impl RuntimeService for CriRuntimeService {
         let id = Uuid::new_v4().to_string();
         sandboxes.insert(
             id.clone(),
-            PodSandbox {
+            grpc::PodSandbox {
                 id: id.clone(),
                 metadata: sandbox_conf.metadata,
-                state: PodSandboxState::SandboxReady as i32,
+                state: grpc::PodSandboxState::SandboxReady as i32,
                 created_at: Utc::now().timestamp_nanos(),
                 labels: sandbox_conf.labels,
                 annotations: sandbox_conf.annotations,
                 runtime_handler: handler.to_string(),
             },
         );
-        Ok(Response::new(RunPodSandboxResponse { pod_sandbox_id: id }))
+
+        let mut sandbox_containers = self.sandbox_containers.write().await;
+        sandbox_containers.insert(id.clone(), vec![]);
+
+        Ok(Response::new(grpc::RunPodSandboxResponse {
+            pod_sandbox_id: id,
+        }))
     }
 
     async fn list_pod_sandbox(
         &self,
-        req: Request<ListPodSandboxRequest>,
-    ) -> CriResult<ListPodSandboxResponse> {
+        req: Request<grpc::ListPodSandboxRequest>,
+    ) -> CriResult<grpc::ListPodSandboxResponse> {
         let filter = req.into_inner().filter.unwrap_or_default();
-        Ok(Response::new(ListPodSandboxResponse {
+        Ok(Response::new(grpc::ListPodSandboxResponse {
             items: self
                 .sandboxes
                 .read()
@@ -323,8 +334,8 @@ impl RuntimeService for CriRuntimeService {
 
     async fn stop_pod_sandbox(
         &self,
-        req: Request<StopPodSandboxRequest>,
-    ) -> CriResult<StopPodSandboxResponse> {
+        req: Request<grpc::StopPodSandboxRequest>,
+    ) -> CriResult<grpc::StopPodSandboxResponse> {
         let id = req.into_inner().pod_sandbox_id;
 
         let mut sandboxes = self.sandboxes.write().await;
@@ -334,32 +345,30 @@ impl RuntimeService for CriRuntimeService {
         };
 
         // Stop all containers inside the sandbox. This forcibly terminates all containers with no grace period.
-        let container_store = self.containers.read().await;
-        let containers: Vec<&UserContainer> = container_store
-            .iter()
-            .filter(|x| x.pod_sandbox_id == id)
-            .collect();
-        for container in containers {
-            self.stop_container(Request::new(StopContainerRequest {
-                container_id: container.id.clone(),
-                timeout: 0,
-            }));
+        let mut sandbox_containers = self.sandbox_containers.write().await;
+        if let Some(containers) = sandbox_containers.get_mut(&id) {
+            for id in containers.drain(0..) {
+                self.stop_container(Request::new(grpc::StopContainerRequest {
+                    container_id: id.clone(),
+                    timeout: 0,
+                }));
+            }
         }
 
         // mark the pod sandbox as not ready, preventing future container creation.
-        sandbox.state = PodSandboxState::SandboxNotready as i32;
+        sandbox.state = grpc::PodSandboxState::SandboxNotready as i32;
 
         // TODO(bacongobbler): when networking is implemented, here is where we should tear down the network.
 
-        Ok(Response::new(StopPodSandboxResponse {}))
+        Ok(Response::new(grpc::StopPodSandboxResponse {}))
     }
 
     // remove_pod_sandbox removes the sandbox. If there are running containers in the sandbox, they should be forcibly
     // removed.
     async fn remove_pod_sandbox(
         &self,
-        req: Request<RemovePodSandboxRequest>,
-    ) -> CriResult<RemovePodSandboxResponse> {
+        req: Request<grpc::RemovePodSandboxRequest>,
+    ) -> CriResult<grpc::RemovePodSandboxResponse> {
         let id = &req.into_inner().pod_sandbox_id;
 
         let mut sandboxes = self.sandboxes.write().await;
@@ -369,7 +378,7 @@ impl RuntimeService for CriRuntimeService {
         };
 
         // return an error if the sandbox container is still running.
-        if sandbox.state == PodSandboxState::SandboxReady as i32 {
+        if sandbox.state == grpc::PodSandboxState::SandboxReady as i32 {
             return Err(Status::failed_precondition(format!(
                 "Sandbox container {} is not fully stopped",
                 id
@@ -380,24 +389,26 @@ impl RuntimeService for CriRuntimeService {
         // network namespace is not closed yet.
 
         // remove all containers inside the sandbox.
-        for container in self.containers.read().await.iter() {
-            if &container.pod_sandbox_id == id {
-                self.remove_container(Request::new(RemoveContainerRequest {
-                    container_id: container.id.clone(),
+        let mut sandbox_containers = self.sandbox_containers.write().await;
+        if let Some(container_ids) = sandbox_containers.get(id) {
+            for container_id in container_ids {
+                self.remove_container(Request::new(grpc::RemoveContainerRequest {
+                    container_id: container_id.clone(),
                 }));
             }
+            sandbox_containers.remove(id);
         }
 
         // remove the sandbox.
         sandboxes.remove(id);
 
-        Ok(Response::new(RemovePodSandboxResponse {}))
+        Ok(Response::new(grpc::RemovePodSandboxResponse {}))
     }
 
     async fn pod_sandbox_status(
         &self,
-        req: Request<PodSandboxStatusRequest>,
-    ) -> CriResult<PodSandboxStatusResponse> {
+        req: Request<grpc::PodSandboxStatusRequest>,
+    ) -> CriResult<grpc::PodSandboxStatusResponse> {
         let request = req.into_inner();
 
         let sandboxes = self.sandboxes.read().await;
@@ -411,7 +422,7 @@ impl RuntimeService for CriRuntimeService {
             }
         };
 
-        let status = PodSandboxStatus::from(sandbox.clone());
+        let status = grpc::PodSandboxStatus::from(sandbox.clone());
 
         // TODO(bacongobbler): report back status on the network and linux-specific sandbox status here (when implemented)
 
@@ -419,7 +430,7 @@ impl RuntimeService for CriRuntimeService {
         //
         // Right now, we don't have any extra information to provide to the user here, so we'll just return what we know.
 
-        Ok(Response::new(PodSandboxStatusResponse {
+        Ok(Response::new(grpc::PodSandboxStatusResponse {
             info: HashMap::new(),
             status: Some(status),
         }))
@@ -427,8 +438,8 @@ impl RuntimeService for CriRuntimeService {
 
     async fn create_container(
         &self,
-        req: Request<CreateContainerRequest>,
-    ) -> CriResult<CreateContainerResponse> {
+        req: Request<grpc::CreateContainerRequest>,
+    ) -> CriResult<grpc::CreateContainerResponse> {
         let container_req = req.into_inner();
         let container_config = container_req.config.unwrap_or_default();
         let sandbox_config = container_req.sandbox_config.unwrap_or_default();
@@ -444,7 +455,7 @@ impl RuntimeService for CriRuntimeService {
         let mut container = UserContainer {
             id: id.to_owned(),
             pod_sandbox_id: container_req.pod_sandbox_id,
-            state: ContainerState::ContainerCreated as i32,
+            state: grpc::ContainerState::ContainerCreated as i32,
             created_at: Utc::now().timestamp_nanos(),
             config: container_config.to_owned(),
             log_path: None, // to be set further down
@@ -465,7 +476,7 @@ impl RuntimeService for CriRuntimeService {
         // generate volume mounts.
         for mount in container_config.mounts {
             let volume_id = Uuid::new_v4().to_string();
-            container.volumes.push(Mount {
+            container.volumes.push(grpc::Mount {
                 host_path: PathBuf::from("volumes")
                     .join(volume_id)
                     .into_os_string()
@@ -495,22 +506,31 @@ impl RuntimeService for CriRuntimeService {
         }
 
         // add container to the store.
-        self.containers.write().await.push(container);
+        let mut sandbox_containers = self.sandbox_containers.write().await;
+        sandbox_containers
+            .entry(container.pod_sandbox_id.clone())
+            .or_default()
+            .push(container.id.clone());
+        self.containers
+            .write()
+            .await
+            .insert(container.id.clone(), container);
 
-        Ok(Response::new(CreateContainerResponse { container_id: id }))
+        Ok(Response::new(grpc::CreateContainerResponse {
+            container_id: id,
+        }))
     }
 
     async fn start_container(
         &self,
-        req: Request<StartContainerRequest>,
-    ) -> CriResult<StartContainerResponse> {
+        req: Request<grpc::StartContainerRequest>,
+    ) -> CriResult<grpc::StartContainerResponse> {
         let id = req.into_inner().container_id;
         let mut containers = self.containers.write().await;
 
         // Create specific scope for the container read lock
         let mut container = containers
-            .iter_mut()
-            .find(|c| c.id == id)
+            .get_mut(&id)
             .ok_or_else(|| Status::not_found("Container not found"))?;
         let sandboxes = self.sandboxes.read().await;
         let sandbox = sandboxes
@@ -553,6 +573,7 @@ impl RuntimeService for CriRuntimeService {
 
                 wascc_run_http(wasm, env, key).map_err(|e| Status::internal(e.to_string()))?;
                 let mut running_containers = self.running_containers.write().await;
+
                 // Fake token. Needs to be replaced with a real cancellation token, which should come from wascc.
                 let token = ContainerCancellationToken::WasccCancelationToken(key.to_string());
                 running_containers.insert(container.id.clone(), token);
@@ -579,49 +600,62 @@ impl RuntimeService for CriRuntimeService {
                 running_containers.insert(container.id.clone(), token);
             }
         };
-        container.state = ContainerState::ContainerRunning as i32;
-        Ok(Response::new(StartContainerResponse {}))
+        container.state = grpc::ContainerState::ContainerRunning as i32;
+        Ok(Response::new(grpc::StartContainerResponse {}))
     }
 
     async fn stop_container(
         &self,
-        req: Request<StopContainerRequest>,
-    ) -> CriResult<StopContainerResponse> {
+        req: Request<grpc::StopContainerRequest>,
+    ) -> CriResult<grpc::StopContainerResponse> {
         let tokens = self.running_containers.read().await;
         if let Some(token) = tokens.get(&req.into_inner().container_id) {
             token.stop()
         }
-        Ok(Response::new(StopContainerResponse {}))
+        Ok(Response::new(grpc::StopContainerResponse {}))
     }
 
     async fn remove_container(
         &self,
-        req: Request<RemoveContainerRequest>,
-    ) -> CriResult<RemoveContainerResponse> {
-        let tokens = self.running_containers.read().await;
+        req: Request<grpc::RemoveContainerRequest>,
+    ) -> CriResult<grpc::RemoveContainerResponse> {
+        let mut tokens = self.running_containers.write().await;
         let id = req.into_inner().container_id;
         match tokens.get(&id) {
-            Some(token) => token.remove(),
+            Some(token) => {
+                token.remove();
+                tokens.remove(&id);
+            }
             None => {
                 // Documentation seems to suggest that this is not an error case.
                 log::debug!("ID {} is not found in running containers", id)
             }
         };
-        self.containers.write().await.retain(|c| c.id != id);
-        Ok(Response::new(RemoveContainerResponse {}))
+
+        let mut containers = self.containers.write().await;
+        let container = containers.get_mut(&id).unwrap();
+
+        let mut sandbox_containers = self.sandbox_containers.write().await;
+        if let Some(sandbox) = sandbox_containers.get_mut(&container.pod_sandbox_id) {
+            let pos = sandbox.iter().position(|id| &container.id == id).unwrap();
+            sandbox.remove(pos);
+        }
+        containers.remove(&id);
+
+        Ok(Response::new(grpc::RemoveContainerResponse {}))
     }
 
     async fn list_containers(
         &self,
-        req: Request<ListContainersRequest>,
-    ) -> CriResult<ListContainersResponse> {
+        req: Request<grpc::ListContainersRequest>,
+    ) -> CriResult<grpc::ListContainersResponse> {
         let filter = req.into_inner().filter.unwrap_or_default();
-        Ok(Response::new(ListContainersResponse {
+        Ok(Response::new(grpc::ListContainersResponse {
             containers: self
                 .containers
                 .read()
                 .await
-                .iter()
+                .values()
                 .filter(|c| {
                     (filter.id == "" || c.id == filter.id)
                         && filter
@@ -635,24 +669,23 @@ impl RuntimeService for CriRuntimeService {
                             || has_labels(&filter.label_selector, &c.config.labels))
                 })
                 .cloned()
-                .map(Container::from)
+                .map(grpc::Container::from)
                 .collect(),
         }))
     }
 
     async fn container_status(
         &self,
-        req: Request<ContainerStatusRequest>,
-    ) -> CriResult<ContainerStatusResponse> {
+        req: Request<grpc::ContainerStatusRequest>,
+    ) -> CriResult<grpc::ContainerStatusResponse> {
         let id = req.into_inner().container_id;
         let containers = self.containers.read().await;
         let container = containers
-            .iter()
-            .find(|c| c.id == id)
+            .get(&id)
             .ok_or_else(|| Status::not_found(format!("Container with ID {} does not exist", id)))?;
 
-        Ok(Response::new(ContainerStatusResponse {
-            status: Some(ContainerStatus {
+        Ok(Response::new(grpc::ContainerStatusResponse {
+            status: Some(grpc::ContainerStatus {
                 id: container.id.clone(),
                 metadata: container.config.metadata.clone(),
                 state: container.state,
@@ -681,27 +714,27 @@ impl RuntimeService for CriRuntimeService {
 
     async fn container_stats(
         &self,
-        req: Request<ContainerStatsRequest>,
-    ) -> CriResult<ContainerStatsResponse> {
+        req: Request<grpc::ContainerStatsRequest>,
+    ) -> CriResult<grpc::ContainerStatsResponse> {
         let id = req.into_inner().container_id;
         let containers = self.containers.read().await;
         let container = containers
-            .iter()
-            .find(|c| c.id == id)
-            .ok_or_else(|| Status::not_found("Container not found"))?;
-        Ok(Response::new(ContainerStatsResponse {
+            .get(&id)
+            .ok_or_else(|| Status::not_found(format!("Container with ID {} does not exist", id)))?;
+
+        Ok(Response::new(grpc::ContainerStatsResponse {
             stats: Some(container.clone().into()),
         }))
     }
 
     async fn list_container_stats(
         &self,
-        req: Request<ListContainerStatsRequest>,
-    ) -> CriResult<ListContainerStatsResponse> {
+        req: Request<grpc::ListContainerStatsRequest>,
+    ) -> CriResult<grpc::ListContainerStatsResponse> {
         let filter = req.into_inner().filter.unwrap_or_default();
         let containers = self.containers.read().await;
-        let container_stats: Vec<ContainerStats> = containers
-            .iter()
+        let container_stats: Vec<grpc::ContainerStats> = containers
+            .values()
             .filter(|c| {
                 (filter.id == "" || c.id == filter.id)
                     && (filter.pod_sandbox_id == "" || c.pod_sandbox_id == filter.pod_sandbox_id)
@@ -709,9 +742,9 @@ impl RuntimeService for CriRuntimeService {
                         || has_labels(&filter.label_selector, &c.config.labels))
             })
             .cloned()
-            .map(ContainerStats::from)
+            .map(grpc::ContainerStats::from)
             .collect();
-        Ok(Response::new(ListContainerStatsResponse {
+        Ok(Response::new(grpc::ListContainerStatsResponse {
             stats: container_stats,
         }))
     }
@@ -764,7 +797,9 @@ mod test {
     #[tokio::test]
     async fn test_version() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
-        let res = svc.version(Request::new(VersionRequest::default())).await;
+        let res = svc
+            .version(Request::new(grpc::VersionRequest::default()))
+            .await;
         assert_eq!(
             res.as_ref()
                 .expect("successful version request")
@@ -784,9 +819,9 @@ mod test {
     async fn test_update_runtime_config() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let _ = svc
-            .update_runtime_config(Request::new(UpdateRuntimeConfigRequest {
-                runtime_config: Some(RuntimeConfig {
-                    network_config: Some(NetworkConfig {
+            .update_runtime_config(Request::new(grpc::UpdateRuntimeConfigRequest {
+                runtime_config: Some(grpc::RuntimeConfig {
+                    network_config: Some(grpc::NetworkConfig {
                         pod_cidr: "192.168.1.0/24".to_owned(),
                     }),
                 }),
@@ -804,7 +839,7 @@ mod test {
     async fn test_status() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let res = svc
-            .status(Request::new(StatusRequest::default()))
+            .status(Request::new(grpc::StatusRequest::default()))
             .await
             .expect("successful status request");
         assert_eq!(
@@ -814,7 +849,7 @@ mod test {
                 // so keep them hard coded. If we start needing to update
                 // these (such as with networking) or add our own arbitrary
                 // conditions, we can move them into the struct
-                RuntimeCondition {
+                grpc::RuntimeCondition {
                     r#type: "RuntimeReady".to_owned(),
                     status: true,
                     // NOTE: We should make these reasons an enum once we
@@ -822,7 +857,7 @@ mod test {
                     reason: "RuntimeStarted".to_owned(),
                     message: "Runtime has been started and is ready to run modules".to_owned(),
                 },
-                RuntimeCondition {
+                grpc::RuntimeCondition {
                     r#type: "NetworkReady".to_owned(),
                     status: false, // False until we figure out networking support
                     reason: "Unimplemented".to_owned(),
@@ -835,7 +870,7 @@ mod test {
         assert!(res.get_ref().info.is_empty());
 
         // now double check that info gets data if verbose is requested
-        let mut req = StatusRequest::default();
+        let mut req = grpc::StatusRequest::default();
         req.verbose = true;
         let res = svc
             .status(Request::new(req))
@@ -855,32 +890,32 @@ mod test {
         labels.insert("test1".to_owned(), "testing".to_owned());
         sandboxes.insert(
             "test".to_owned(),
-            PodSandbox {
+            grpc::PodSandbox {
                 id: "test".to_owned(),
-                state: PodSandboxState::SandboxReady as i32,
+                state: grpc::PodSandboxState::SandboxReady as i32,
                 labels: labels.clone(),
                 ..Default::default()
             },
         );
         sandboxes.insert(
             "test2".to_owned(),
-            PodSandbox {
+            grpc::PodSandbox {
                 id: "test2".to_owned(),
-                state: PodSandboxState::SandboxReady as i32,
+                state: grpc::PodSandboxState::SandboxReady as i32,
                 ..Default::default()
             },
         );
         sandboxes.insert(
             "test3".to_owned(),
-            PodSandbox {
+            grpc::PodSandbox {
                 id: "test3".to_owned(),
-                state: PodSandboxState::SandboxNotready as i32,
+                state: grpc::PodSandboxState::SandboxNotready as i32,
                 ..Default::default()
             },
         );
         drop(sandboxes);
-        let req = Request::new(ListPodSandboxRequest {
-            filter: Some(PodSandboxFilter::default()),
+        let req = Request::new(grpc::ListPodSandboxRequest {
+            filter: Some(grpc::PodSandboxFilter::default()),
         });
         let res = svc.list_pod_sandbox(req).await;
         // Nothing set should return all
@@ -888,8 +923,8 @@ mod test {
         assert_eq!(3, sandboxes.len());
 
         // Labels should only return matching containers
-        let req = Request::new(ListPodSandboxRequest {
-            filter: Some(PodSandboxFilter {
+        let req = Request::new(grpc::ListPodSandboxRequest {
+            filter: Some(grpc::PodSandboxFilter {
                 label_selector: labels,
                 ..Default::default()
             }),
@@ -899,8 +934,8 @@ mod test {
         assert_eq!(1, sandboxes.len());
 
         // ID should return a specific sandbox
-        let req = Request::new(ListPodSandboxRequest {
-            filter: Some(PodSandboxFilter {
+        let req = Request::new(grpc::ListPodSandboxRequest {
+            filter: Some(grpc::PodSandboxFilter {
                 id: "test2".to_owned(),
                 ..Default::default()
             }),
@@ -910,10 +945,10 @@ mod test {
         assert_eq!(1, sandboxes.len());
 
         // Status should return a specific sandbox
-        let req = Request::new(ListPodSandboxRequest {
-            filter: Some(PodSandboxFilter {
-                state: Some(PodSandboxStateValue {
-                    state: PodSandboxState::SandboxNotready as i32,
+        let req = Request::new(grpc::ListPodSandboxRequest {
+            filter: Some(grpc::PodSandboxFilter {
+                state: Some(grpc::PodSandboxStateValue {
+                    state: grpc::PodSandboxState::SandboxNotready as i32,
                 }),
                 ..Default::default()
             }),
@@ -927,10 +962,10 @@ mod test {
     async fn test_pod_sandbox_status() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut sandboxes = svc.sandboxes.write().await;
-        let sandbox = PodSandbox {
+        let sandbox = grpc::PodSandbox {
             id: "1".to_owned(),
             metadata: None,
-            state: PodSandboxState::SandboxNotready as i32,
+            state: grpc::PodSandboxState::SandboxNotready as i32,
             created_at: Utc::now().timestamp_nanos(),
             labels: HashMap::new(),
             annotations: HashMap::new(),
@@ -938,7 +973,7 @@ mod test {
         };
         sandboxes.insert(sandbox.id.clone(), sandbox);
         drop(sandboxes);
-        let req = Request::new(PodSandboxStatusRequest {
+        let req = Request::new(grpc::PodSandboxStatusRequest {
             pod_sandbox_id: "1".to_owned(),
             verbose: true,
         });
@@ -958,16 +993,24 @@ mod test {
     async fn test_remove_pod_sandbox() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut container = UserContainer::default();
+        container.id = "test".to_owned();
         container.pod_sandbox_id = "1".to_owned();
-        svc.containers.write().await.push(container);
+        svc.sandbox_containers
+            .write()
+            .await
+            .insert(container.pod_sandbox_id.clone(), vec![container.id.clone()]);
+        svc.containers
+            .write()
+            .await
+            .insert(container.id.clone(), container);
 
         let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
             "1".to_owned(),
-            PodSandbox {
+            grpc::PodSandbox {
                 id: "1".to_owned(),
                 metadata: None,
-                state: PodSandboxState::SandboxNotready as i32,
+                state: grpc::PodSandboxState::SandboxNotready as i32,
                 created_at: Utc::now().timestamp_nanos(),
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
@@ -975,15 +1018,16 @@ mod test {
             },
         );
         drop(sandboxes);
-        let req = Request::new(RemovePodSandboxRequest {
+        let req = Request::new(grpc::RemovePodSandboxRequest {
             pod_sandbox_id: "1".to_owned(),
         });
         let res = svc.remove_pod_sandbox(req).await;
         // we expect an empty response object
         res.expect("remove sandbox result");
-        // TODO(bacongobbler): un-comment this once remove_container() has been implemented.
-        // assert_eq!(0, svc.containers.len());
-        assert_eq!(0, svc.sandboxes.read().await.values().len());
+        // TODO(bacongobbler): un-comment this once remove_container() has been implemented
+        //assert_eq!(0, svc.containers.read().unwrap().len());
+
+        assert_eq!(0, svc.sandboxes.read().await.values().cloned().len());
     }
 
     #[tokio::test]
@@ -992,10 +1036,10 @@ mod test {
         let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
             "test".to_owned(),
-            PodSandbox {
+            grpc::PodSandbox {
                 id: "test".to_owned(),
                 metadata: None,
-                state: PodSandboxState::SandboxReady as i32,
+                state: grpc::PodSandboxState::SandboxReady as i32,
                 created_at: Utc::now().timestamp_nanos(),
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
@@ -1003,7 +1047,12 @@ mod test {
             },
         );
         drop(sandboxes);
-        let req = Request::new(StopPodSandboxRequest {
+
+        svc.sandbox_containers
+            .write()
+            .await
+            .insert("test".to_owned(), vec![]);
+        let req = Request::new(grpc::StopPodSandboxRequest {
             pod_sandbox_id: "test".to_owned(),
         });
         let res = svc.stop_pod_sandbox(req).await;
@@ -1012,7 +1061,7 @@ mod test {
         res.expect("empty stop result");
 
         // test what happens when the requested pod sandbox doesn't exist
-        let req = Request::new(StopPodSandboxRequest {
+        let req = Request::new(grpc::StopPodSandboxRequest {
             pod_sandbox_id: "doesnotexist".to_owned(),
         });
         let res = svc.stop_pod_sandbox(req).await;
@@ -1025,10 +1074,10 @@ mod test {
         let mut sandboxes = svc.sandboxes.write().await;
         sandboxes.insert(
             "test".to_owned(),
-            PodSandbox {
+            grpc::PodSandbox {
                 id: "test".to_owned(),
                 metadata: None,
-                state: PodSandboxState::SandboxReady as i32,
+                state: grpc::PodSandboxState::SandboxReady as i32,
                 created_at: Utc::now().timestamp_nanos(),
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
@@ -1036,11 +1085,11 @@ mod test {
             },
         );
         drop(sandboxes);
-        let mut config = ContainerConfig::default();
-        config.image = Some(ImageSpec {
+        let mut config = grpc::ContainerConfig::default();
+        config.image = Some(grpc::ImageSpec {
             image: "foo/bar:baz".to_owned(),
         });
-        let req = Request::new(CreateContainerRequest {
+        let req = Request::new(grpc::CreateContainerRequest {
             pod_sandbox_id: "test".to_owned(),
             config: Some(config),
             sandbox_config: None,
@@ -1087,7 +1136,7 @@ mod test {
             .expect("couldn't write wasm");
 
         // create sandbox and container
-        let sandbox = PodSandbox::default();
+        let sandbox = grpc::PodSandbox::default();
         let mut container = UserContainer::default();
 
         let container_id = {
@@ -1098,26 +1147,31 @@ mod test {
             container.image_ref = image_ref.into();
             let container_id = container.id.clone();
 
-            containers.push(container);
+            containers.insert(container.id.clone(), container);
 
             // write sandbox
             let mut sandboxes = svc.sandboxes.write().await;
             sandboxes.insert(sandbox.id.clone(), sandbox);
             container_id
         };
-        let req = Request::new(StartContainerRequest { container_id });
+
+        let id = container_id.clone();
+        let req = Request::new(grpc::StartContainerRequest { container_id });
         let res = svc.start_container(req).await;
         // We expect an empty response object
         res.expect("start container result");
         // We should also expect the container to be in the running state
         let containers = svc.containers.read().await;
-        assert_eq!(ContainerState::ContainerRunning as i32, containers[0].state);
+        assert_eq!(
+            grpc::ContainerState::ContainerRunning as i32,
+            containers[&id].state
+        );
     }
 
     #[tokio::test]
     async fn test_stop_container() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
-        let req = Request::new(StopContainerRequest::default());
+        let req = Request::new(grpc::StopContainerRequest::default());
         let res = svc.stop_container(req).await;
         // We expect an empty response object
         res.expect("stop container result");
@@ -1127,28 +1181,35 @@ mod test {
     async fn test_remove_container() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut containers = svc.containers.write().await;
-        containers.push(UserContainer {
-            id: "test".to_owned(),
-            pod_sandbox_id: "test".to_owned(),
-            image_ref: "doesntmatter".to_owned(),
-            created_at: Utc::now().timestamp_nanos(),
-            state: ContainerState::ContainerRunning as i32,
-            config: ContainerConfig::default(),
-            log_path: None,
-            volumes: Vec::default(),
-        });
-        containers.push(UserContainer {
-            id: "foo".to_owned(),
-            pod_sandbox_id: "foo".to_owned(),
-            image_ref: "doesntmatter".to_owned(),
-            created_at: Utc::now().timestamp_nanos(),
-            state: ContainerState::ContainerRunning as i32,
-            config: ContainerConfig::default(),
-            log_path: None,
-            volumes: Vec::default(),
-        });
+
+        containers.insert(
+            "test".to_owned(),
+            UserContainer {
+                id: "test".to_owned(),
+                pod_sandbox_id: "test".to_owned(),
+                image_ref: "doesntmatter".to_owned(),
+                created_at: Utc::now().timestamp_nanos(),
+                state: grpc::ContainerState::ContainerRunning as i32,
+                config: grpc::ContainerConfig::default(),
+                log_path: None,
+                volumes: Vec::default(),
+            },
+        );
+        containers.insert(
+            "foo".to_owned(),
+            UserContainer {
+                id: "foo".to_owned(),
+                pod_sandbox_id: "foo".to_owned(),
+                image_ref: "doesntmatter".to_owned(),
+                created_at: Utc::now().timestamp_nanos(),
+                state: grpc::ContainerState::ContainerRunning as i32,
+                config: grpc::ContainerConfig::default(),
+                log_path: None,
+                volumes: Vec::default(),
+            },
+        );
         drop(containers);
-        let req = Request::new(RemoveContainerRequest {
+        let req = Request::new(grpc::RemoveContainerRequest {
             container_id: "test".to_owned(),
         });
         let res = svc.remove_container(req).await;
@@ -1164,51 +1225,60 @@ mod test {
         let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
-        containers.push(UserContainer {
-            id: "test".to_owned(),
-            pod_sandbox_id: "test".to_owned(),
-            state: ContainerState::ContainerRunning as i32,
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test".to_owned(),
-                }),
-                labels: labels.clone(),
+        containers.insert(
+            "test".to_owned(),
+            UserContainer {
+                id: "test".to_owned(),
+                pod_sandbox_id: "test".to_owned(),
+                state: grpc::ContainerState::ContainerRunning as i32,
+                config: grpc::ContainerConfig {
+                    metadata: Some(grpc::ContainerMetadata {
+                        attempt: 1,
+                        name: "test".to_owned(),
+                    }),
+                    labels: labels.clone(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
-        containers.push(UserContainer {
-            id: "test2".to_owned(),
-            pod_sandbox_id: "test2".to_owned(),
-            state: ContainerState::ContainerRunning as i32,
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test2".to_owned(),
-                }),
-                labels: HashMap::default(),
+        );
+        containers.insert(
+            "test2".to_owned(),
+            UserContainer {
+                id: "test2".to_owned(),
+                pod_sandbox_id: "test2".to_owned(),
+                state: grpc::ContainerState::ContainerRunning as i32,
+                config: grpc::ContainerConfig {
+                    metadata: Some(grpc::ContainerMetadata {
+                        attempt: 1,
+                        name: "test2".to_owned(),
+                    }),
+                    labels: HashMap::default(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
-        containers.push(UserContainer {
-            id: "test3".to_owned(),
-            pod_sandbox_id: "test2".to_owned(),
-            state: ContainerState::ContainerCreated as i32,
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test2".to_owned(),
-                }),
-                labels: HashMap::default(),
+        );
+        containers.insert(
+            "test3".to_owned(),
+            UserContainer {
+                id: "test3".to_owned(),
+                pod_sandbox_id: "test2".to_owned(),
+                state: grpc::ContainerState::ContainerCreated as i32,
+                config: grpc::ContainerConfig {
+                    metadata: Some(grpc::ContainerMetadata {
+                        attempt: 1,
+                        name: "test2".to_owned(),
+                    }),
+                    labels: HashMap::default(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
+        );
         drop(containers);
-        let req = Request::new(ListContainersRequest {
-            filter: Some(ContainerFilter::default()),
+        let req = Request::new(grpc::ListContainersRequest {
+            filter: Some(grpc::ContainerFilter::default()),
         });
         let res = svc.list_containers(req).await;
         // Nothing set should return all
@@ -1216,8 +1286,8 @@ mod test {
         assert_eq!(3, containers.len());
 
         // Pod sandbox ID should return all containers in the given sandbox
-        let req = Request::new(ListContainersRequest {
-            filter: Some(ContainerFilter {
+        let req = Request::new(grpc::ListContainersRequest {
+            filter: Some(grpc::ContainerFilter {
                 pod_sandbox_id: "test2".to_owned(),
                 ..Default::default()
             }),
@@ -1227,8 +1297,8 @@ mod test {
         assert_eq!(2, containers.len());
 
         // Labels should only return matching containers
-        let req = Request::new(ListContainersRequest {
-            filter: Some(ContainerFilter {
+        let req = Request::new(grpc::ListContainersRequest {
+            filter: Some(grpc::ContainerFilter {
                 label_selector: labels,
                 ..Default::default()
             }),
@@ -1238,8 +1308,8 @@ mod test {
         assert_eq!(1, containers.len());
 
         // ID and sandbox ID should return a specific container
-        let req = Request::new(ListContainersRequest {
-            filter: Some(ContainerFilter {
+        let req = Request::new(grpc::ListContainersRequest {
+            filter: Some(grpc::ContainerFilter {
                 id: "test2".to_owned(),
                 pod_sandbox_id: "test2".to_owned(),
                 ..Default::default()
@@ -1250,10 +1320,10 @@ mod test {
         assert_eq!(1, containers.len());
 
         // Status should return a specific container
-        let req = Request::new(ListContainersRequest {
-            filter: Some(ContainerFilter {
-                state: Some(ContainerStateValue {
-                    state: ContainerState::ContainerCreated as i32,
+        let req = Request::new(grpc::ListContainersRequest {
+            filter: Some(grpc::ContainerFilter {
+                state: Some(grpc::ContainerStateValue {
+                    state: grpc::ContainerState::ContainerCreated as i32,
                 }),
                 ..Default::default()
             }),
@@ -1267,20 +1337,23 @@ mod test {
     async fn test_container_status() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
         let mut containers = svc.containers.write().await;
-        containers.push(UserContainer {
-            id: "test".to_owned(),
-            pod_sandbox_id: "test".to_owned(),
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test".to_owned(),
-                }),
+        containers.insert(
+            "test".to_owned(),
+            UserContainer {
+                id: "test".to_owned(),
+                pod_sandbox_id: "test".to_owned(),
+                config: grpc::ContainerConfig {
+                    metadata: Some(grpc::ContainerMetadata {
+                        attempt: 1,
+                        name: "test".to_owned(),
+                    }),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
+        );
         drop(containers);
-        let req = Request::new(ContainerStatusRequest {
+        let req = Request::new(grpc::ContainerStatusRequest {
             container_id: "test".to_owned(),
             verbose: false,
         });
@@ -1301,21 +1374,24 @@ mod test {
         let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
-        containers.push(UserContainer {
-            id: "test".to_owned(),
-            pod_sandbox_id: "test".to_owned(),
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test".to_owned(),
-                }),
-                labels: labels.clone(),
+        containers.insert(
+            "test".to_owned(),
+            UserContainer {
+                id: "test".to_owned(),
+                pod_sandbox_id: "test".to_owned(),
+                config: grpc::ContainerConfig {
+                    metadata: Some(grpc::ContainerMetadata {
+                        attempt: 1,
+                        name: "test".to_owned(),
+                    }),
+                    labels: labels.clone(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
+        );
         drop(containers);
-        let req = Request::new(ContainerStatsRequest {
+        let req = Request::new(grpc::ContainerStatsRequest {
             container_id: "test".to_owned(),
         });
         let res = svc.container_stats(req).await;
@@ -1327,10 +1403,10 @@ mod test {
             .unwrap();
         assert_eq!(
             stats,
-            ContainerStats {
-                attributes: Some(ContainerAttributes {
+            grpc::ContainerStats {
+                attributes: Some(grpc::ContainerAttributes {
                     id: "test".to_owned(),
-                    metadata: Some(ContainerMetadata {
+                    metadata: Some(grpc::ContainerMetadata {
                         attempt: 1,
                         name: "test".to_owned(),
                     }),
@@ -1350,48 +1426,57 @@ mod test {
         let mut containers = svc.containers.write().await;
         let mut labels = HashMap::new();
         labels.insert("test1".to_owned(), "testing".to_owned());
-        containers.push(UserContainer {
-            id: "test".to_owned(),
-            pod_sandbox_id: "test".to_owned(),
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test".to_owned(),
-                }),
-                labels: labels.clone(),
+        containers.insert(
+            "test".to_owned(),
+            UserContainer {
+                id: "test".to_owned(),
+                pod_sandbox_id: "test".to_owned(),
+                config: grpc::ContainerConfig {
+                    metadata: Some(grpc::ContainerMetadata {
+                        attempt: 1,
+                        name: "test".to_owned(),
+                    }),
+                    labels: labels.clone(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
-        containers.push(UserContainer {
-            id: "test2".to_owned(),
-            pod_sandbox_id: "test2".to_owned(),
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test2".to_owned(),
-                }),
-                labels: HashMap::default(),
+        );
+        containers.insert(
+            "test2".to_owned(),
+            UserContainer {
+                id: "test2".to_owned(),
+                pod_sandbox_id: "test2".to_owned(),
+                config: grpc::ContainerConfig {
+                    metadata: Some(grpc::ContainerMetadata {
+                        attempt: 1,
+                        name: "test2".to_owned(),
+                    }),
+                    labels: HashMap::default(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
-        containers.push(UserContainer {
-            id: "test3".to_owned(),
-            pod_sandbox_id: "test2".to_owned(),
-            config: ContainerConfig {
-                metadata: Some(ContainerMetadata {
-                    attempt: 1,
-                    name: "test2".to_owned(),
-                }),
-                labels: HashMap::default(),
+        );
+        containers.insert(
+            "test3".to_owned(),
+            UserContainer {
+                id: "test3".to_owned(),
+                pod_sandbox_id: "test2".to_owned(),
+                config: grpc::ContainerConfig {
+                    metadata: Some(grpc::ContainerMetadata {
+                        attempt: 1,
+                        name: "test2".to_owned(),
+                    }),
+                    labels: HashMap::default(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
+        );
         drop(containers);
-        let req = Request::new(ListContainerStatsRequest {
-            filter: Some(ContainerStatsFilter::default()),
+        let req = Request::new(grpc::ListContainerStatsRequest {
+            filter: Some(grpc::ContainerStatsFilter::default()),
         });
         let res = svc.list_container_stats(req).await;
         // Nothing set should return all
@@ -1399,8 +1484,8 @@ mod test {
         assert_eq!(3, stats.len());
 
         // Pod sandbox ID should return all containers in the given sandbox
-        let req = Request::new(ListContainerStatsRequest {
-            filter: Some(ContainerStatsFilter {
+        let req = Request::new(grpc::ListContainerStatsRequest {
+            filter: Some(grpc::ContainerStatsFilter {
                 pod_sandbox_id: "test2".to_owned(),
                 ..Default::default()
             }),
@@ -1410,8 +1495,8 @@ mod test {
         assert_eq!(2, stats.len());
 
         // Labels should only return matching containers
-        let req = Request::new(ListContainerStatsRequest {
-            filter: Some(ContainerStatsFilter {
+        let req = Request::new(grpc::ListContainerStatsRequest {
+            filter: Some(grpc::ContainerStatsFilter {
                 label_selector: labels,
                 ..Default::default()
             }),
@@ -1421,8 +1506,8 @@ mod test {
         assert_eq!(1, stats.len());
 
         // ID and sandbox ID should return a specific container
-        let req = Request::new(ListContainerStatsRequest {
-            filter: Some(ContainerStatsFilter {
+        let req = Request::new(grpc::ListContainerStatsRequest {
+            filter: Some(grpc::ContainerStatsFilter {
                 id: "test2".to_owned(),
                 pod_sandbox_id: "test2".to_owned(),
                 ..Default::default()
@@ -1436,13 +1521,13 @@ mod test {
     #[tokio::test]
     async fn test_run_pod_sandbox() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
-        let mut sandbox_req = RunPodSandboxRequest::default();
+        let mut sandbox_req = grpc::RunPodSandboxRequest::default();
         sandbox_req.runtime_handler = RuntimeHandler::WASI.to_string();
 
         // Create a temporary log dir for testing purposes
         let dir = tempdir().unwrap();
         let log_dir_name = dir.path().join("testdir");
-        let mut conf = PodSandboxConfig::default();
+        let mut conf = grpc::PodSandboxConfig::default();
         conf.log_directory = log_dir_name.to_str().unwrap().to_owned();
         sandbox_req.config = Some(conf);
         let req = Request::new(sandbox_req);
@@ -1457,20 +1542,20 @@ mod test {
     #[tokio::test]
     async fn test_create_and_list() {
         let svc = CriRuntimeService::new(PathBuf::from(""), None).await;
-        let mut sandbox_req = RunPodSandboxRequest::default();
+        let mut sandbox_req = grpc::RunPodSandboxRequest::default();
         sandbox_req.runtime_handler = RuntimeHandler::WASI.to_string();
 
         // Create a temporary log dir for testing purposes
         let dir = tempdir().unwrap();
         let log_dir_name = dir.path().join("testdir");
-        let mut conf = PodSandboxConfig::default();
+        let mut conf = grpc::PodSandboxConfig::default();
         conf.log_directory = log_dir_name.to_str().unwrap().to_owned();
         sandbox_req.config = Some(conf);
         let req = Request::new(sandbox_req);
         let res = svc.run_pod_sandbox(req).await;
 
         let id = res.unwrap().get_ref().pod_sandbox_id.clone();
-        let list_req = Request::new(ListPodSandboxRequest::default());
+        let list_req = Request::new(grpc::ListPodSandboxRequest::default());
         let res = svc.list_pod_sandbox(list_req).await;
         let sandboxes = res.expect("successful pod list").get_ref().items.clone();
         assert_eq!(1, sandboxes.len());
