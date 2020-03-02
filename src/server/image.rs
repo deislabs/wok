@@ -11,7 +11,6 @@ use super::grpc;
 use crate::docker::Reference;
 use crate::server::CriResult;
 use crate::store::ModuleStore;
-use crate::util;
 
 /// Implement a CRI Image Service
 #[derive(Debug, Default)]
@@ -20,15 +19,18 @@ pub struct CriImageService {
 }
 
 impl CriImageService {
-    pub fn new(root_dir: PathBuf) -> Self {
-        util::ensure_root_dir(&root_dir).expect("cannot create root directory for image service");
+    pub async fn new(root_dir: PathBuf) -> Self {
+        tokio::fs::create_dir_all(&root_dir)
+            .await
+            .expect("cannot create root directory for image service");
         CriImageService {
-            module_store: Mutex::new(ModuleStore::new(root_dir)),
+            module_store: Mutex::new(ModuleStore::new(root_dir).await),
         }
     }
 
-    async fn pull_module<'a>(&self, module_ref: Reference<'a>) -> Result<(), failure::Error> {
-        self.module_store.lock().await.pull(module_ref)?;
+    async fn pull_module(&self, module_ref: Reference) -> Result<(), failure::Error> {
+        self.module_store.lock().await.pull(&module_ref).await?;
+
         Ok(())
     }
 }
@@ -40,7 +42,7 @@ impl grpc::image_service_server::ImageService for CriImageService {
         _request: Request<grpc::ListImagesRequest>,
     ) -> CriResult<grpc::ListImagesResponse> {
         let resp = grpc::ListImagesResponse {
-            images: self.module_store.lock().await.list().unwrap(),
+            images: self.module_store.lock().await.list().await,
         };
         Ok(Response::new(resp))
     }
@@ -56,7 +58,7 @@ impl grpc::image_service_server::ImageService for CriImageService {
             .lock()
             .await
             .list()
-            .unwrap()
+            .await
             .iter()
             .find(|i| i.id == image_id)
             .cloned();
@@ -73,7 +75,7 @@ impl grpc::image_service_server::ImageService for CriImageService {
         request: Request<grpc::PullImageRequest>,
     ) -> CriResult<grpc::PullImageResponse> {
         let image_ref = request.into_inner().image.unwrap().image;
-        let reference = Reference::try_from(&image_ref).expect("Image ref is malformed");
+        let reference = Reference::try_from(image_ref.clone()).expect("Image ref is malformed");
         self.pull_module(reference)
             .await
             .expect("cannot pull module");
@@ -102,10 +104,10 @@ impl grpc::image_service_server::ImageService for CriImageService {
                         .unwrap(),
                 }),
                 used_bytes: Some(grpc::UInt64Value {
-                    value: module_store.used_bytes().unwrap(),
+                    value: module_store.used_bytes().await,
                 }),
                 inodes_used: Some(grpc::UInt64Value {
-                    value: module_store.used_inodes().unwrap(),
+                    value: module_store.used_inodes().await,
                 }),
             }],
         };
@@ -120,7 +122,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_image_status() {
-        let service = CriImageService::new(PathBuf::from(""));
+        let service = CriImageService::new(PathBuf::from("")).await;
         let req = grpc::ImageStatusRequest {
             image: Some(grpc::ImageSpec {
                 image: "foo/bar:baz".to_owned(),

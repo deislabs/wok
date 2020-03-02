@@ -1,9 +1,10 @@
 use std::error::Error;
 use std::ffi::CString;
 use std::fmt;
-use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
 
 use crate::docker::Reference;
 use crate::oci::{GoString, Pull};
@@ -55,7 +56,7 @@ impl Error for ModuleStoreError {
 }
 
 impl ModuleStore {
-    pub fn new(root_dir: PathBuf) -> Self {
+    pub async fn new(root_dir: PathBuf) -> Self {
         // TODO(bacongobbler): populate `modules` using `root_dir`
         ModuleStore {
             root_dir,
@@ -63,28 +64,19 @@ impl ModuleStore {
         }
     }
 
-    pub fn add(&mut self, module: Module) -> Result<(), ModuleStoreError> {
-        let mut modules = self
-            .modules
-            .write()
-            .or(Err(ModuleStoreError::LockNotAcquired))?;
+    pub async fn add(&mut self, module: Module) {
+        let mut modules = self.modules.write().await;
+
         modules.push(module);
-        Ok(())
     }
 
-    pub fn list(&self) -> Result<Vec<Module>, ModuleStoreError> {
-        let modules = self
-            .modules
-            .read()
-            .or(Err(ModuleStoreError::LockNotAcquired))?;
-        Ok(modules.clone())
+    pub async fn list(&self) -> Vec<Module> {
+        let modules = self.modules.read().await;
+        modules.clone()
     }
 
-    pub fn remove(&mut self, key: String) -> Result<Module, ModuleStoreError> {
-        let mut modules = self
-            .modules
-            .write()
-            .or(Err(ModuleStoreError::LockNotAcquired))?;
+    pub async fn remove(&mut self, key: String) -> Result<Module, ModuleStoreError> {
+        let mut modules = self.modules.write().await;
         let i = modules
             .iter()
             .position(|i| i.id == key)
@@ -92,93 +84,100 @@ impl ModuleStore {
         Ok(modules.remove(i))
     }
 
-    pub fn pull(&mut self, reference: Reference) -> Result<(), ModuleStoreError> {
+    pub async fn pull(&mut self, reference: &Reference) -> Result<(), ModuleStoreError> {
         let pull_path = self.pull_path(reference);
-        std::fs::create_dir_all(&pull_path).or(Err(ModuleStoreError::CannotPullModule))?;
-        pull_wasm(reference, self.pull_file_path(reference))?;
-        let attrs = fs::metadata(self.pull_file_path(reference))
+        tokio::fs::create_dir_all(&pull_path)
+            .await
+            .or(Err(ModuleStoreError::CannotPullModule))?;
+
+        pull_wasm(&reference, self.pull_file_path(&reference)).await?;
+
+        let attrs = tokio::fs::metadata(self.pull_file_path(&reference))
+            .await
             .or(Err(ModuleStoreError::CannotFetchModuleMetadata))?;
         // TODO(bacongobbler): fetch image information from the module
         let m = Module {
-            id: String::from(reference.whole),
+            id: reference.whole().to_owned(),
             repo_digests: vec![],
             repo_tags: vec![],
             size: attrs.len(),
             uid: None,
             username: "".to_owned(),
         };
-        self.add(m)
+        self.add(m).await;
+        Ok(())
     }
 
     pub(crate) fn root_dir(&self) -> &PathBuf {
         &self.root_dir
     }
 
-    pub(crate) fn used_bytes(&self) -> Result<u64, ModuleStoreError> {
-        let modules = self
-            .modules
-            .read()
-            .or(Err(ModuleStoreError::LockNotAcquired))?;
-        Ok(modules.iter().map(|i| i.size).sum())
+    pub(crate) async fn used_bytes(&self) -> u64 {
+        let modules = self.modules.read().await;
+        modules.iter().map(|i| i.size).sum()
     }
 
-    pub(crate) fn used_inodes(&self) -> Result<u64, ModuleStoreError> {
-        let modules = self
-            .modules
-            .read()
-            .or(Err(ModuleStoreError::LockNotAcquired))?;
-        Ok(modules.len() as u64)
+    pub(crate) async fn used_inodes(&self) -> u64 {
+        self.modules.read().await.len() as u64
     }
 
-    pub(crate) fn pull_path(&self, r: Reference) -> PathBuf {
-        self.root_dir.join(r.registry).join(r.repo).join(r.tag)
+    pub(crate) fn pull_path(&self, r: &Reference) -> PathBuf {
+        self.root_dir
+            .join(r.registry())
+            .join(r.repository())
+            .join(r.tag())
     }
 
-    pub(crate) fn pull_file_path(&self, r: Reference) -> PathBuf {
+    pub(crate) fn pull_file_path(&self, r: &Reference) -> PathBuf {
         self.pull_path(r).join("module.wasm")
     }
 }
 
-fn pull_wasm(reference: Reference, fp: PathBuf) -> Result<(), ModuleStoreError> {
+async fn pull_wasm(reference: &Reference, fp: PathBuf) -> Result<(), ModuleStoreError> {
     let filepath = fp.to_str().ok_or(ModuleStoreError::InvalidPullPath)?;
-    println!("pulling {} into {}", reference.whole, filepath);
-    let c_ref = CString::new(reference.whole).or(Err(ModuleStoreError::InvalidReference))?;
+    println!("pulling {} into {}", reference.whole(), filepath);
+    let c_ref = CString::new(reference.whole()).or(Err(ModuleStoreError::InvalidReference))?;
     let c_file = CString::new(filepath).or(Err(ModuleStoreError::InvalidPullPath))?;
 
-    let go_str_ref = GoString {
-        p: c_ref.as_ptr(),
-        n: c_ref.as_bytes().len() as isize,
-    };
-    let go_str_file = GoString {
-        p: c_file.as_ptr(),
-        n: c_file.as_bytes().len() as isize,
-    };
-
-    let result = unsafe { Pull(go_str_ref, go_str_file) };
+    let result = tokio::task::spawn_blocking(move || {
+        let go_str_ref = GoString {
+            p: c_ref.as_ptr(),
+            n: c_ref.as_bytes().len() as isize,
+        };
+        let go_str_file = GoString {
+            p: c_file.as_ptr(),
+            n: c_file.as_bytes().len() as isize,
+        };
+        unsafe { Pull(go_str_ref, go_str_file) }
+    })
+    .await
+    .unwrap();
     match result {
         0 => Ok(()),
         _ => Err(ModuleStoreError::CannotPullModule),
     }
 }
 
-#[test]
-fn test_pull_wasm() {
+#[tokio::test]
+async fn test_pull_wasm() {
     use std::convert::TryFrom;
 
     // this is a public registry, so this test is both making sure the library is working,
     // as well as ensuring the registry is publicly accessible
     let module = "webassembly.azurecr.io/hello-wasm:v1".to_owned();
-    let r = Reference::try_from(&module).expect("Failed to parse reference");
-    pull_wasm(r, PathBuf::from("target/pulled.wasm")).unwrap();
+    let r = Reference::try_from(module).expect("Failed to parse reference");
+    pull_wasm(&r, PathBuf::from("target/pulled.wasm"))
+        .await
+        .unwrap();
 }
 
-#[test]
-fn test_module_store_used_bytes() {
+#[tokio::test]
+async fn test_module_store_used_bytes() {
     let mut s = ModuleStore {
         root_dir: PathBuf::from("/"),
         modules: Arc::new(RwLock::new(vec![])),
     };
-    assert_eq!(0, s.used_bytes().expect("could not retrieve used_bytes"));
+    assert_eq!(0, s.used_bytes().await);
 
     let m = Module {
         id: "1".to_owned(),
@@ -188,8 +187,8 @@ fn test_module_store_used_bytes() {
         uid: None,
         username: "".to_owned(),
     };
-    s.add(m).expect("could not add module to store");
-    assert_eq!(1, s.used_bytes().expect("could not retrieve used_bytes"));
+    s.add(m).await;
+    assert_eq!(1, s.used_bytes().await);
 
     let m2 = Module {
         id: "2".to_owned(),
@@ -199,9 +198,11 @@ fn test_module_store_used_bytes() {
         uid: None,
         username: "".to_owned(),
     };
-    s.add(m2).expect("could not add module to store");
-    assert_eq!(3, s.used_bytes().expect("could not retrieve used_bytes"));
+    s.add(m2).await;
+    assert_eq!(3, s.used_bytes().await);
 
-    s.remove("1".to_owned()).expect("could not remove module");
-    assert_eq!(2, s.used_bytes().expect("could not retrieve used_bytes"));
+    s.remove("1".to_owned())
+        .await
+        .expect("could not remove module");
+    assert_eq!(2, s.used_bytes().await);
 }

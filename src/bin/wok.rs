@@ -58,8 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
     log::debug!("Using {:?} for pod CIDR", pod_cidr);
-    let runtime = CriRuntimeService::new(opts.dir.clone(), pod_cidr);
-    let image_service = CriImageService::new(opts.dir.clone());
+    let runtime = CriRuntimeService::new(opts.dir.clone(), pod_cidr).await;
+    let image_service = CriImageService::new(opts.dir.clone()).await;
 
     let parts: Vec<&str> = opts.addr.split("://").collect();
 
