@@ -1,7 +1,6 @@
-# WOK: WebAssembly On Kubernetes
+**NOTE**: This project is completely deprecated and archived and SHOULD NOT be used. It represents a rejected experiment to try implementing CRI (Container Runtime Interface) using a WASM runtime. We have opened this project up so people can see what we experimented with before. For our current work in this space, see [Krustlet](https://github.com/deislabs/krustlet).
 
-[![Build
-Status](https://github.com/deislabs/wok/workflows/Build%20and%20Test/badge.svg?branch=master)](https://github.com/deislabs/wok/actions?query=workflow%3A%22Build+and+Test%22)
+# WOK: WebAssembly On Kubernetes
 
 WOK is a CRI implementation that runs WASM on Kubernetes.
 
